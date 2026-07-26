@@ -9,6 +9,10 @@ export interface ApiAppRecord {
   keyPreview: string;
   allowedOrigins: string[];
   allowedModels: string[];
+  /** Empty means this app may use the shared Gemini API account pool. */
+  geminiApiKeyIds: string[];
+  /** Set for a self-service user app; it dynamically limits the Gemini pool to that user. */
+  ownerUserId?: string;
   sessionNamespace: string;
   rateLimitPerMinute: number;
   maxConcurrency: number;
@@ -22,6 +26,8 @@ interface CreateAppInput {
   rawKey?: string;
   allowedOrigins: string[];
   allowedModels: string[];
+  geminiApiKeyIds?: string[];
+  ownerUserId?: string;
   sessionNamespace: string;
   rateLimitPerMinute: number;
   maxConcurrency: number;
@@ -31,6 +37,8 @@ interface UpdateAppInput {
   name?: string;
   allowedOrigins?: string[];
   allowedModels?: string[];
+  geminiApiKeyIds?: string[];
+  ownerUserId?: string;
   sessionNamespace?: string;
   rateLimitPerMinute?: number;
   maxConcurrency?: number;
@@ -126,6 +134,8 @@ export class AppStore {
       existing.name = input.name;
       existing.allowedOrigins = uniqueStrings(input.allowedOrigins);
       existing.allowedModels = uniqueStrings(input.allowedModels);
+      existing.geminiApiKeyIds = uniqueStrings(input.geminiApiKeyIds ?? existing.geminiApiKeyIds ?? []);
+      existing.ownerUserId = input.ownerUserId ?? existing.ownerUserId;
       existing.sessionNamespace = sanitizeSegment(input.sessionNamespace);
       existing.rateLimitPerMinute = Math.max(0, input.rateLimitPerMinute);
       existing.maxConcurrency = Math.max(0, input.maxConcurrency);
@@ -146,6 +156,8 @@ export class AppStore {
       keyPreview: maskKey(rawKey),
       allowedOrigins: uniqueStrings(input.allowedOrigins),
       allowedModels: uniqueStrings(input.allowedModels),
+      geminiApiKeyIds: uniqueStrings(input.geminiApiKeyIds ?? []),
+      ownerUserId: input.ownerUserId?.trim() || undefined,
       sessionNamespace: sanitizeSegment(input.sessionNamespace),
       rateLimitPerMinute: Math.max(0, input.rateLimitPerMinute),
       maxConcurrency: Math.max(0, input.maxConcurrency),
@@ -298,6 +310,12 @@ export class AppStore {
     if (Array.isArray(input.allowedModels)) {
       current.allowedModels = uniqueStrings(input.allowedModels);
     }
+    if (Array.isArray(input.geminiApiKeyIds)) {
+      current.geminiApiKeyIds = uniqueStrings(input.geminiApiKeyIds);
+    }
+    if (typeof input.ownerUserId === 'string' && input.ownerUserId.trim()) {
+      current.ownerUserId = input.ownerUserId.trim();
+    }
     if (typeof input.sessionNamespace === 'string' && input.sessionNamespace.trim()) {
       current.sessionNamespace = sanitizeSegment(input.sessionNamespace);
     }
@@ -316,7 +334,14 @@ export class AppStore {
     try {
       const raw = readFileSync(this.filePath, 'utf8');
       const parsed = JSON.parse(raw) as PersistedState;
-      this.state = { apps: Array.isArray(parsed.apps) ? parsed.apps : [] };
+      this.state = {
+        apps: Array.isArray(parsed.apps)
+          ? parsed.apps.map((app) => ({
+            ...app,
+            geminiApiKeyIds: uniqueStrings(Array.isArray(app.geminiApiKeyIds) ? app.geminiApiKeyIds : []),
+          }))
+          : [],
+      };
     } catch {
       this.state = { apps: [] };
     }

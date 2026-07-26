@@ -88,11 +88,18 @@ export class GeminiApiKeyPool {
     estimatedTokens: number,
     options?: {
       excludeKeyIds?: string[];
+      allowedKeyIds?: string[];
+      ownerUserId?: string;
     },
   ): GeminiApiLocalBackpressure | null {
     const excludedKeyIds = new Set((options?.excludeKeyIds ?? []).map((value) => value.trim()).filter(Boolean));
+    const allowedKeyIds = options?.allowedKeyIds && options.allowedKeyIds.length > 0
+      ? new Set(options.allowedKeyIds.map((value) => value.trim()).filter(Boolean))
+      : null;
     const waits = this.config.keys
       .filter((key) => key.enabled)
+      .filter((key) => !allowedKeyIds || allowedKeyIds.has(key.id))
+      .filter((key) => !options?.ownerUserId || key.userId === options.ownerUserId)
       .filter((key) => allowsModel(key, model, this.accountModelGate))
       .filter((key) => !excludedKeyIds.has(key.id))
       .map((key) => ({ key, availability: this.ledger.getAvailability(key.quotaGroup, model, estimatedTokens) }))
@@ -118,6 +125,8 @@ export class GeminiApiKeyPool {
     estimatedTokens: number,
     options?: {
       excludeKeyIds?: string[];
+      allowedKeyIds?: string[];
+      ownerUserId?: string;
     },
   ): GeminiApiKeyReservation {
     if (!this.config.enabled) {
@@ -134,9 +143,14 @@ export class GeminiApiKeyPool {
     }
 
     const excludedKeyIds = new Set((options?.excludeKeyIds ?? []).map((value) => value.trim()).filter(Boolean));
+    const allowedKeyIds = options?.allowedKeyIds && options.allowedKeyIds.length > 0
+      ? new Set(options.allowedKeyIds.map((value) => value.trim()).filter(Boolean))
+      : null;
     const keyOrder = new Map(this.config.keys.map((key, index) => [key.id, index]));
     const candidates = this.config.keys
       .filter((key) => key.enabled)
+      .filter((key) => !allowedKeyIds || allowedKeyIds.has(key.id))
+      .filter((key) => !options?.ownerUserId || key.userId === options.ownerUserId)
       .filter((key) => allowsModel(key, model, this.accountModelGate))
       .filter((key) => !excludedKeyIds.has(key.id))
       .map((key) => {
@@ -184,7 +198,12 @@ export class GeminiApiKeyPool {
       });
 
     if (candidates.length === 0) {
-      const anyForModel = this.config.keys.some((key) => key.enabled && allowsModel(key, model, this.accountModelGate));
+      const anyForModel = this.config.keys.some((key) =>
+        key.enabled &&
+        (!allowedKeyIds || allowedKeyIds.has(key.id)) &&
+        (!options?.ownerUserId || key.userId === options.ownerUserId) &&
+        allowsModel(key, model, this.accountModelGate),
+      );
       throw new GeminiApiProviderError(
         anyForModel ? 'gemini_api_quota_unavailable' : 'gemini_api_no_key_for_model',
         anyForModel

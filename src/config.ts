@@ -86,8 +86,15 @@ export interface RuntimeConfig {
   };
   auditLogPath: string;
   appsStorePath: string;
+  usersStorePath: string;
   interactionsStorePath: string;
   publicBaseUrl?: string;
+  googleOAuth: {
+    enabled: boolean;
+    clientId: string;
+    clientSecret: string;
+    allowedEmails: string[];
+  };
 }
 
 function pick(env: Record<string, string | undefined>, ...keys: string[]): string | undefined {
@@ -301,6 +308,7 @@ function readGeminiApiKeys(
         id,
         key,
         owner: entry.owner,
+        userId: entry.userId,
         projectId: entry.projectId,
         quotaGroup: String(entry.quotaGroup ?? (defaultQuotaGroupMode === 'shared' ? 'default' : id)).trim(),
         tier: String(entry.tier ?? defaultTier).trim(),
@@ -323,6 +331,7 @@ function readGeminiApiKeys(
         id,
         key: String(account.key).trim(),
         owner: account.owner,
+        userId: account.userId,
         projectId: account.projectId,
         quotaGroup: String(account.quotaGroup ?? (defaultQuotaGroupMode === 'shared' ? 'default' : id)).trim(),
         tier: String(account.tier ?? defaultTier).trim(),
@@ -341,6 +350,7 @@ function readGeminiApiKeys(
       id,
       key,
       owner: account.owner,
+      userId: account.userId,
       projectId: account.projectId,
       quotaGroup: String(account.quotaGroup ?? (defaultQuotaGroupMode === 'shared' ? 'default' : id)).trim(),
       tier: String(account.tier ?? defaultTier).trim(),
@@ -686,7 +696,16 @@ export function loadConfig(
     },
     auditLogPath: path.join(dataDir, 'audit.log'),
     appsStorePath: path.join(dataDir, 'apps.json'),
+    // Keep account records separate from router telemetry and directly at the project root.
+    // The store itself enforces owner-only file permissions and keeps only salted hashes.
+    usersStorePath: path.resolve(rootDir, pick(env, 'GEMROUTER_USERS_STORE_PATH') ?? 'users.json'),
     interactionsStorePath: path.join(dataDir, 'interactions.json'),
     publicBaseUrl: pick(env, 'GEMROUTER_PUBLIC_BASE_URL', 'BAIRBI_PUBLIC_BASE_URL', 'BARIBI_PUBLIC_BASE_URL'),
+    googleOAuth: {
+      enabled: readBoolean(env, false, 'GEMROUTER_GOOGLE_OAUTH_ENABLED'),
+      clientId: pick(env, 'GEMROUTER_GOOGLE_CLIENT_ID') ?? '',
+      clientSecret: pick(env, 'GEMROUTER_GOOGLE_CLIENT_SECRET') ?? '',
+      allowedEmails: readList(env, [], 'GEMROUTER_GOOGLE_ALLOWED_EMAILS'),
+    },
   };
 }

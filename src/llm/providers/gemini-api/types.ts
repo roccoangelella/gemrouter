@@ -10,6 +10,8 @@ export interface GeminiApiKeyConfig {
   id: string;
   key: string;
   owner?: string;
+  /** GemRouter self-service user that owns this key, when applicable. */
+  userId?: string;
   projectId?: string;
   quotaGroup: string;
   tier: string;

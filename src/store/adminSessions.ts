@@ -5,6 +5,8 @@ interface SessionRecord {
   expiresAt: number;
   lastSeenAt: number;
   username?: string;
+  role: 'admin' | 'user';
+  userId?: string;
 }
 
 export class AdminSessionStore {
@@ -12,7 +14,7 @@ export class AdminSessionStore {
 
   constructor(private readonly ttlMs: number) {}
 
-  create(input?: { username?: string }): string {
+  create(input?: { username?: string; role?: 'admin' | 'user'; userId?: string }): string {
     this.pruneExpired();
     const id = `adm_${randomBytes(24).toString('base64url')}`;
     const now = Date.now();
@@ -21,6 +23,8 @@ export class AdminSessionStore {
       expiresAt: now + this.ttlMs,
       lastSeenAt: now,
       username: input?.username?.trim() || undefined,
+      role: input?.role ?? 'admin',
+      userId: input?.userId?.trim() || undefined,
     });
     return id;
   }

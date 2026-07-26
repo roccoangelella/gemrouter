@@ -1,7 +1,7 @@
 import 'dotenv/config';
 
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
@@ -69,6 +69,7 @@ import { AdminSessionStore } from './store/adminSessions.js';
 import { AppStore, type ApiAppRecord } from './store/appStore.js';
 import { CompatibilityStore } from './store/compatibilityStore.js';
 import { InteractionStore } from './store/interactions.js';
+import { UserStore, createUserId, validateNewUserCredentials, type UserRecord } from './store/userStore.js';
 import { renderAppShell } from './ui.js';
 
 const PROJECT_NAME = 'GemRouter';
@@ -89,8 +90,15 @@ const llm = createLlmRouter({
   nvidia: nvidiaLlm,
 });
 const appStore = new AppStore(config.appsStorePath);
+const legacyUsersStorePath = path.join(config.dataDir, 'users.json');
+if (!existsSync(config.usersStorePath) && existsSync(legacyUsersStorePath)) {
+  copyFileSync(legacyUsersStorePath, config.usersStorePath);
+  chmodSync(config.usersStorePath, 0o600);
+}
+const userStore = new UserStore(config.usersStorePath);
 const audit = new AuditLogger(config.auditLogPath);
 const adminSessions = new AdminSessionStore(config.adminSessionTtlMs);
+const authAttempts = new Map<string, { count: number; resetAt: number }>();
 const compatibility = new CompatibilityStore(config.compatibility.settingsStorePath, {
   defaultSurface: config.compatibility.defaultSurface,
   enabledSurfaces: config.compatibility.enabledSurfaces,
@@ -192,18 +200,20 @@ function getAdminSession(request: FastifyRequest) {
 }
 
 function setAdminCookie(reply: FastifyReply, sessionId: string): void {
+  const secure = config.publicBaseUrl?.trim().toLowerCase().startsWith('https://') ? '; Secure' : '';
   reply.header(
     'set-cookie',
     `${ADMIN_COOKIE_NAME}=${encodeURIComponent(sessionId)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${Math.floor(
       config.adminSessionTtlMs / 1000,
-    )}`,
+    )}${secure}`,
   );
 }
 
 function clearAdminCookie(reply: FastifyReply): void {
+  const secure = config.publicBaseUrl?.trim().toLowerCase().startsWith('https://') ? '; Secure' : '';
   reply.header(
     'set-cookie',
-    `${ADMIN_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT`,
+    `${ADMIN_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT${secure}`,
   );
 }
 
@@ -217,6 +227,52 @@ function findDashboardAdminUser(username: string, password: string): { username:
     stableCompare(entry.password, normalizedPassword)
   ));
   return match ? { username: match.username } : null;
+}
+
+function consumeAuthAttempt(request: FastifyRequest, purpose: 'login' | 'signup', limit: number): boolean {
+  const key = `${purpose}:${request.ip || 'unknown'}`;
+  const now = Date.now();
+  if (authAttempts.size > 2_000) {
+    for (const [storedKey, value] of authAttempts) {
+      if (value.resetAt <= now) authAttempts.delete(storedKey);
+      if (authAttempts.size <= 1_000) break;
+    }
+  }
+  if (authAttempts.size >= 2_000 && !authAttempts.has(key)) return false;
+  const current = authAttempts.get(key);
+  if (!current || current.resetAt <= now) {
+    authAttempts.set(key, { count: 1, resetAt: now + 15 * 60_000 });
+    return true;
+  }
+  if (current.count >= limit) return false;
+  current.count += 1;
+  return true;
+}
+
+function createSelfServiceUser(usernameInput: string, password: string): { user: UserRecord; apiKey: string } {
+  const username = validateNewUserCredentials(usernameInput, password);
+  const isReserved = config.dashboardAdminUsers.some((entry) => entry.username.trim().toLowerCase() === username);
+  if (isReserved || userStore.findByUsername(username)) {
+    throw new Error('Account cannot be created.');
+  }
+  const userId = createUserId();
+  const createdApp = appStore.create({
+    name: `user:${username}`,
+    allowedOrigins: [],
+    allowedModels: config.freeTierPolicy.textModelIds,
+    geminiApiKeyIds: [],
+    ownerUserId: userId,
+    sessionNamespace: `user:${username}`,
+    rateLimitPerMinute: config.bootstrapApp.rateLimitPerMinute,
+    maxConcurrency: config.bootstrapApp.maxConcurrency,
+  });
+  try {
+    const user = userStore.create({ id: userId, username, password, appId: createdApp.record.id });
+    return { user, apiKey: createdApp.rawKey };
+  } catch (error) {
+    appStore.revoke(createdApp.record.id);
+    throw error;
+  }
 }
 
 function sendError(
@@ -371,7 +427,26 @@ function setCorsHeaders(request: FastifyRequest, reply: FastifyReply): void {
 function hasAdminAccess(request: FastifyRequest): boolean {
   const token = getBearerToken(request);
   if (token === config.adminToken) return true;
-  return getAdminSession(request) !== null;
+  return getAdminSession(request)?.role === 'admin';
+}
+
+function getLoggedInUser(request: FastifyRequest): UserRecord | null {
+  const session = getAdminSession(request);
+  if (session?.role !== 'user' || !session.userId) return null;
+  return userStore.findById(session.userId) ?? null;
+}
+
+function ensureUserSession(request: FastifyRequest, reply: FastifyReply): UserRecord | null {
+  const user = getLoggedInUser(request);
+  if (!user) {
+    sendError(reply, 401, {
+      message: 'User session required',
+      type: 'authentication_error',
+      code: 'user_session_required',
+    });
+    return null;
+  }
+  return user;
 }
 
 function ensureAdmin(request: FastifyRequest, reply: FastifyReply): boolean {
@@ -501,6 +576,8 @@ function resolveTextModelForApp(
 function buildSessionOptions(input: {
   model: string;
   allowedModelIds?: string[];
+  geminiApiKeyIds?: string[];
+  geminiApiOwnerUserId?: string;
   maxTokens?: number;
   temperature?: number;
   sessionNamespace: string;
@@ -518,12 +595,16 @@ function buildSessionOptions(input: {
   return {
     model: input.model,
     allowedModelIds: input.allowedModelIds,
+    geminiApiKeyIds: input.geminiApiKeyIds,
+    geminiApiOwnerUserId: input.geminiApiOwnerUserId,
     maxTokens: input.maxTokens,
     temperature: input.temperature,
     sessionKey,
     sessionLabel: sessionKey,
     resetSession: input.stateful !== true,
-    backendPreference: input.backendPreference,
+    // A self-service user's requests must never spill into a shared backend
+    // (for example the operator's NVIDIA or Ollama credentials).
+    backendPreference: input.geminiApiOwnerUserId ? 'gemini-api' : input.backendPreference,
     thinking: {
       includeThoughts: config.generation.includeThoughts,
       thinkingBudget: config.generation.thinkingBudget,
@@ -548,6 +629,8 @@ function buildRequestLlmOptions(input: {
   sessionNamespace: string;
   model: string;
   allowedModelIds?: string[];
+  geminiApiKeyIds?: string[];
+  geminiApiOwnerUserId?: string;
   maxTokens?: number;
   temperature?: number;
   fingerprintFallback: string;
@@ -567,6 +650,8 @@ function buildRequestLlmOptions(input: {
     backendPreference: parseBackendPreference(input.request),
     model: input.model,
     allowedModelIds: input.allowedModelIds,
+    geminiApiKeyIds: input.geminiApiKeyIds,
+    geminiApiOwnerUserId: input.geminiApiOwnerUserId,
     maxTokens: input.maxTokens,
     temperature: input.temperature,
     sessionNamespace: input.sessionNamespace,
@@ -1444,6 +1529,16 @@ function normalizeAllowedModels(values: unknown): string[] {
   return models.length > 0 ? [...new Set(models)] : config.bootstrapApp.allowedModels;
 }
 
+function parseGeminiApiKeyIds(values: unknown): { ids: string[]; unknownIds: string[] } {
+  if (!Array.isArray(values)) return { ids: [], unknownIds: [] };
+  const requested = [...new Set(values.map((value) => String(value).trim()).filter(Boolean))];
+  const known = new Set(config.geminiApi.keys.map((key) => key.id));
+  return {
+    ids: requested.filter((id) => known.has(id)),
+    unknownIds: requested.filter((id) => !known.has(id)),
+  };
+}
+
 function listPublicEndpoints(): string[] {
   const endpoints = ['/', '/health', '/admin', '/auth/me', '/dashboard/summary'];
   if (isSurfaceEnabled('openai')) {
@@ -1630,6 +1725,8 @@ async function handleChatCompletionsRequest(
       request,
       user: parsed.user,
       sessionNamespace: access.app.sessionNamespace,
+      geminiApiKeyIds: access.app.geminiApiKeyIds,
+      geminiApiOwnerUserId: access.app.ownerUserId,
       model: resolvedModel.model,
       allowedModelIds: resolvedModel.allowedModelIds,
       maxTokens: parsed.maxTokens,
@@ -1637,6 +1734,8 @@ async function handleChatCompletionsRequest(
       fingerprintFallback: createRequestFingerprint(parsed.messages),
       semanticSurface: surface,
     });
+    sessionOptions.tools = parsed.tools;
+    sessionOptions.toolChoice = parsed.toolChoice;
     sessionOptions.semanticProfile = buildSemanticProfile({
       surface,
       channel: 'chat',
@@ -1683,6 +1782,7 @@ async function handleChatCompletionsRequest(
         text: response.content,
         usage,
         finishReason: response.finishReason,
+        toolCalls: response.toolCalls,
       });
     }
 
@@ -1750,14 +1850,42 @@ async function handleChatCompletionsRequest(
         provider: finalProvider,
         response: finalResponse,
       });
-      sendChunk({
-        id: completionId,
-        object: 'chat.completion.chunk',
-        created,
-        model: parsed.model,
-        choices: [{ index: 0, delta: {}, finish_reason: finalResponse?.finishReason ?? 'stop' }],
-        usage: null,
-      });
+      if (finalResponse?.toolCalls && finalResponse.toolCalls.length > 0) {
+        const reasoningDetails = finalResponse.toolCalls
+          .filter((tc: any) => tc.thought_signature)
+          .map((tc: any) => ({
+            type: 'reasoning.encrypted',
+            id: tc.id,
+            data: tc.thought_signature,
+          }));
+
+        sendChunk({
+          id: completionId,
+          object: 'chat.completion.chunk',
+          created,
+          model: parsed.model,
+          choices: [
+            {
+              index: 0,
+              delta: {
+                tool_calls: finalResponse.toolCalls,
+                ...(reasoningDetails.length > 0 ? { reasoning_details: reasoningDetails } : {}),
+              },
+              finish_reason: 'tool_calls',
+            },
+          ],
+          usage: null,
+        });
+      } else {
+        sendChunk({
+          id: completionId,
+          object: 'chat.completion.chunk',
+          created,
+          model: parsed.model,
+          choices: [{ index: 0, delta: {}, finish_reason: finalResponse?.finishReason ?? 'stop' }],
+          usage: null,
+        });
+      }
       if (parsed.includeUsageChunk) {
         sendChunk({
           id: completionId,
@@ -1896,6 +2024,8 @@ async function handleResponsesRequest(
       request,
       user: parsed.user,
       sessionNamespace: access.app.sessionNamespace,
+      geminiApiKeyIds: access.app.geminiApiKeyIds,
+      geminiApiOwnerUserId: access.app.ownerUserId,
       model: resolvedModel.model,
       allowedModelIds: resolvedModel.allowedModelIds,
       maxTokens: parsed.maxTokens,
@@ -2213,6 +2343,8 @@ async function handleImageGenerationsRequest(
     const options = buildSessionOptions({
       model: parsed.model,
       allowedModelIds: access.app.allowedModels,
+      geminiApiKeyIds: access.app.geminiApiKeyIds,
+      geminiApiOwnerUserId: access.app.ownerUserId,
       sessionNamespace: access.app.sessionNamespace,
       sessionHint: parsed.user,
       fingerprintFallback: createRequestFingerprint(messages),
@@ -2337,6 +2469,8 @@ async function handleOllamaChatRequest(
     const sessionOptions = buildRequestLlmOptions({
       request,
       sessionNamespace: access.app.sessionNamespace,
+      geminiApiKeyIds: access.app.geminiApiKeyIds,
+      geminiApiOwnerUserId: access.app.ownerUserId,
       model: resolvedModel.model,
       allowedModelIds: resolvedModel.allowedModelIds,
       maxTokens: parsed.maxTokens,
@@ -2550,6 +2684,8 @@ async function handleOllamaGenerateRequest(
     const sessionOptions = buildRequestLlmOptions({
       request,
       sessionNamespace: access.app.sessionNamespace,
+      geminiApiKeyIds: access.app.geminiApiKeyIds,
+      geminiApiOwnerUserId: access.app.ownerUserId,
       model: resolvedModel.model,
       allowedModelIds: resolvedModel.allowedModelIds,
       maxTokens: parsed.maxTokens,
@@ -2766,6 +2902,7 @@ app.get('/admin', async (request, reply) =>
         projectName: PROJECT_NAME,
         modelIds: config.modelIds,
         publicBaseUrl: inferPublicBaseUrl(request),
+        googleOAuthEnabled: config.googleOAuth.enabled,
       }),
     ),
 );
@@ -2775,13 +2912,21 @@ app.get('/health', async (request) => getRuntimeSnapshot(request));
 async function handleDashboardLogin(request: FastifyRequest<{ Body: { token?: string; username?: string; password?: string } }>, reply: FastifyReply) {
   const token = String(request.body?.token ?? '').trim();
   const username = String(request.body?.username ?? '').trim();
-  const password = String(request.body?.password ?? '').trim();
+  const password = String(request.body?.password ?? '');
+  if (!token && (!consumeAuthAttempt(request, 'login', 10) || username.length > 64 || password.length > 256)) {
+    return sendError(reply, 429, {
+      message: 'Too many sign-in attempts. Please try again later.',
+      type: 'rate_limit_error',
+      code: 'auth_rate_limited',
+    });
+  }
 
   const adminUser = token === config.adminToken
     ? { username: 'token-admin' }
     : findDashboardAdminUser(username, password);
 
-  if (!adminUser) {
+  const routerUser = adminUser ? null : userStore.verify(username, password);
+  if (!adminUser && !routerUser) {
     return sendError(reply, 401, {
       message: 'Invalid dashboard credentials',
       type: 'authentication_error',
@@ -2789,10 +2934,12 @@ async function handleDashboardLogin(request: FastifyRequest<{ Body: { token?: st
     });
   }
 
-  const sessionId = adminSessions.create({ username: adminUser.username });
+  const sessionId = adminSessions.create(adminUser
+    ? { username: adminUser.username, role: 'admin' }
+    : { username: routerUser!.username, role: 'user', userId: routerUser!.id });
   setAdminCookie(reply, sessionId);
   audit.write({
-    type: 'admin.login',
+    type: adminUser ? 'admin.login' : 'user.login',
     requestId: request.id,
     route: request.url,
     statusCode: 200,
@@ -2801,8 +2948,8 @@ async function handleDashboardLogin(request: FastifyRequest<{ Body: { token?: st
   return {
     ok: true,
     project: PROJECT_NAME,
-    role: 'admin',
-    username: adminUser.username,
+    role: adminUser ? 'admin' : 'user',
+    username: adminUser?.username ?? routerUser!.username,
   };
 }
 
@@ -2819,6 +2966,38 @@ app.get('/dashboard/summary', async () => buildGuestSummary());
 app.post<{ Body: { token?: string; username?: string; password?: string } }>('/auth/login', async (request, reply) =>
   handleDashboardLogin(request, reply),
 );
+
+app.post<{ Body: { username?: string; password?: string } }>('/auth/signup', async (request, reply) => {
+  if (!consumeAuthAttempt(request, 'signup', 5)) {
+    return sendError(reply, 429, {
+      message: 'Too many sign-up attempts. Please try again later.',
+      type: 'rate_limit_error',
+      code: 'signup_rate_limited',
+    });
+  }
+  const username = String(request.body?.username ?? '');
+  const password = String(request.body?.password ?? '');
+  let created: { user: UserRecord; apiKey: string };
+  try {
+    created = createSelfServiceUser(username, password);
+  } catch (error) {
+    audit.write({ type: 'user.signup.failed', requestId: request.id, route: request.url, statusCode: 400, latencyMs: Date.now() - getStartedAt(request) });
+    const message = error instanceof Error && error.message.includes('Password') || error instanceof Error && error.message.includes('Username')
+      ? error.message
+      : 'Account cannot be created.';
+    return sendError(reply, 400, { message, type: 'invalid_request_error', code: 'signup_failed' });
+  }
+  const sessionId = adminSessions.create({ username: created.user.username, role: 'user', userId: created.user.id });
+  setAdminCookie(reply, sessionId);
+  reply.header('cache-control', 'no-store');
+  audit.write({ type: 'user.signup', requestId: request.id, appId: created.user.appId, route: request.url, statusCode: 201, latencyMs: Date.now() - getStartedAt(request) });
+  return reply.code(201).send({
+    ok: true,
+    role: 'user',
+    username: created.user.username,
+    apiKey: created.apiKey,
+  });
+});
 app.post('/auth/logout', async (request, reply) => handleDashboardLogout(request, reply));
 app.get('/auth/me', async (request) => {
   const session = getAdminSession(request);
@@ -2832,11 +3011,108 @@ app.get('/auth/me', async (request) => {
   return {
     ok: true,
     authenticated: true,
-    role: 'admin',
+    role: session.role,
     username: session.username ?? 'admin',
     project: PROJECT_NAME,
     service: SERVICE_NAME,
   };
+});
+
+app.get('/auth/google', async (request, reply) => {
+  if (!config.googleOAuth.enabled) {
+    return reply.redirect('/admin?error=' + encodeURIComponent('Google OAuth is not enabled.'));
+  }
+  const publicBaseUrl = inferPublicBaseUrl(request);
+  const redirectUri = `${publicBaseUrl}/auth/google/callback`;
+  const state = Math.random().toString(36).substring(2);
+  const googleAuthUrl = `https://accounts.google.com/o/oauth2/v2/auth?` +
+    `client_id=${encodeURIComponent(config.googleOAuth.clientId)}` +
+    `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+    `&response_type=code` +
+    `&scope=${encodeURIComponent('openid email profile')}` +
+    `&state=${encodeURIComponent(state)}` +
+    `&prompt=select_account`;
+  
+  return reply.redirect(googleAuthUrl);
+});
+
+app.get('/auth/google/callback', async (request, reply) => {
+  if (!config.googleOAuth.enabled) {
+    return reply.redirect('/admin?error=' + encodeURIComponent('Google OAuth is not enabled.'));
+  }
+  const { code, error } = request.query as { code?: string; error?: string };
+  if (error) {
+    return reply.redirect('/admin?error=' + encodeURIComponent(`Google login error: ${error}`));
+  }
+  if (!code) {
+    return reply.redirect('/admin?error=' + encodeURIComponent('Missing authorization code from Google.'));
+  }
+
+  try {
+    const publicBaseUrl = inferPublicBaseUrl(request);
+    const redirectUri = `${publicBaseUrl}/auth/google/callback`;
+
+    const tokenResponse = await globalThis.fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams({
+        code,
+        client_id: config.googleOAuth.clientId,
+        client_secret: config.googleOAuth.clientSecret,
+        redirect_uri: redirectUri,
+        grant_type: 'authorization_code',
+      }),
+    });
+
+    if (!tokenResponse.ok) {
+      const errorText = await tokenResponse.text();
+      return reply.redirect('/admin?error=' + encodeURIComponent(`Failed to exchange code: ${errorText}`));
+    }
+
+    const tokens = await tokenResponse.json() as { access_token: string; id_token?: string };
+    
+    const userInfoResponse = await globalThis.fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+      headers: {
+        Authorization: `Bearer ${tokens.access_token}`,
+      },
+    });
+
+    if (!userInfoResponse.ok) {
+      return reply.redirect('/admin?error=' + encodeURIComponent('Failed to fetch user info from Google.'));
+    }
+
+    const userInfo = await userInfoResponse.json() as { email?: string; email_verified?: boolean; name?: string };
+    const email = userInfo.email?.trim().toLowerCase();
+    
+    if (!email || !userInfo.email_verified) {
+      return reply.redirect('/admin?error=' + encodeURIComponent('Google account has unverified or missing email.'));
+    }
+
+    const isAllowed = config.googleOAuth.allowedEmails.some(
+      (allowedEmail) => allowedEmail.trim().toLowerCase() === email
+    );
+
+    if (!isAllowed) {
+      return reply.redirect('/admin?error=' + encodeURIComponent(`Email ${email} is not authorized for admin access.`));
+    }
+
+    const sessionId = adminSessions.create({ username: email });
+    setAdminCookie(reply, sessionId);
+    
+    audit.write({
+      type: 'admin.login.google',
+      requestId: request.id,
+      route: request.url,
+      statusCode: 200,
+      latencyMs: Date.now() - getStartedAt(request),
+    });
+
+    return reply.redirect('/admin');
+  } catch (err: any) {
+    return reply.redirect('/admin?error=' + encodeURIComponent(`Google login exception: ${err.message || err}`));
+  }
 });
 
 app.post<{ Body: { token?: string; username?: string; password?: string } }>('/admin/login', async (request, reply) =>
@@ -2907,6 +3183,7 @@ app.get('/admin/summary', async (request, reply) => {
     },
     apps: appStore.list().map(sanitizeAdminApp),
     stats: interactions.summary(60),
+    myStats: interactions.summaryForApps([bootstrapApp.id], 60),
   };
 });
 
@@ -2962,6 +3239,7 @@ function persistGeminiAccounts(): void {
   const serialized = config.geminiApi.keys.map((key) => ({
     id: key.id,
     owner: key.owner ?? null,
+    userId: key.userId ?? null,
     projectId: key.projectId ?? null,
     quotaGroup: key.quotaGroup,
     tier: key.tier,
@@ -2987,6 +3265,7 @@ function maskAccount(key: typeof config.geminiApi.keys[number]): Record<string, 
   return {
     id: key.id,
     owner: key.owner ?? null,
+    userId: key.userId ?? null,
     projectId: key.projectId ?? null,
     quotaGroup: key.quotaGroup,
     tier: key.tier,
@@ -3082,6 +3361,118 @@ app.post<{ Body: { id?: string } }>('/admin/provider/gemini-api/accounts/remove'
   const result = applyGeminiAccounts();
   audit.write({ type: 'admin.account.remove', requestId: request.id, route: request.url, statusCode: 200, latencyMs: Date.now() - getStartedAt(request) });
   return { ok: true, removed: id, reload: result, accounts: config.geminiApi.keys.map(maskAccount) };
+});
+
+function accountIdsForUser(userId: string): string[] {
+  return config.geminiApi.keys.filter((key) => key.userId === userId).map((key) => key.id);
+}
+
+function nextOwnedAccountId(username: string): string {
+  const slug = username.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'account';
+  const base = `user-${slug}`;
+  const existing = new Set(config.geminiApi.keys.map((key) => key.id));
+  let suffix = 1;
+  let id = `${base}-${suffix}`;
+  while (existing.has(id)) id = `${base}-${++suffix}`;
+  return id;
+}
+
+function userApp(user: UserRecord): ApiAppRecord | null {
+  return appStore.findById(user.appId) ?? null;
+}
+
+app.get('/user/summary', async (request, reply) => {
+  const user = ensureUserSession(request, reply);
+  if (!user) return reply;
+  const clientApp = userApp(user);
+  if (!clientApp || clientApp.revokedAt) {
+    return sendError(reply, 409, { message: 'This user no longer has an active API profile', type: 'invalid_request_error', code: 'user_api_profile_unavailable' });
+  }
+  return {
+    ok: true,
+    username: user.username,
+    apiKeyPreview: clientApp.keyPreview,
+    apiBaseUrl: `${inferPublicBaseUrl(request).replace(/\/$/, '')}/v1`,
+    models: clientApp.allowedModels,
+    accounts: config.geminiApi.keys.filter((key) => key.userId === user.id).map(maskAccount),
+    stats: interactions.summaryForApps([clientApp.id], 60),
+  };
+});
+
+app.post<{ Body: { key?: string; projectId?: string } }>('/user/gemini-accounts', async (request, reply) => {
+  const user = ensureUserSession(request, reply);
+  if (!user) return reply;
+  const key = String(request.body?.key ?? '').trim();
+  if (!key) return sendError(reply, 400, { message: 'Gemini API key is required', type: 'invalid_request_error', code: 'missing_key' });
+  if (config.geminiApi.keys.some((entry) => entry.key === key)) {
+    return sendError(reply, 409, { message: 'This key is already configured', type: 'invalid_request_error', code: 'duplicate_key' });
+  }
+  const id = nextOwnedAccountId(user.username);
+  config.geminiApi.keys.push({
+    id,
+    key,
+    owner: user.username,
+    userId: user.id,
+    projectId: request.body?.projectId?.trim() || undefined,
+    quotaGroup: config.geminiApi.defaultQuotaGroupMode === 'shared' ? `user:${user.id}` : id,
+    tier: config.geminiApi.defaultTier,
+    priority: 100,
+    enabled: true,
+  });
+  const reload = applyGeminiAccounts();
+  audit.write({ type: 'user.account.add', requestId: request.id, route: request.url, statusCode: 201, latencyMs: Date.now() - getStartedAt(request) });
+  return reply.code(201).send({ ok: true, account: maskAccount(config.geminiApi.keys.at(-1)!), reload });
+});
+
+app.delete<{ Params: { id: string } }>('/user/gemini-accounts/:id', async (request, reply) => {
+  const user = ensureUserSession(request, reply);
+  if (!user) return reply;
+  const index = config.geminiApi.keys.findIndex((key) => key.id === request.params.id && key.userId === user.id);
+  if (index < 0) return sendError(reply, 404, { message: 'Gemini account not found', type: 'invalid_request_error', code: 'account_not_found' });
+  config.geminiApi.keys.splice(index, 1);
+  const reload = applyGeminiAccounts();
+  audit.write({ type: 'user.account.remove', requestId: request.id, route: request.url, statusCode: 200, latencyMs: Date.now() - getStartedAt(request) });
+  return { ok: true, reload };
+});
+
+app.post('/user/api-key/rotate', async (request, reply) => {
+  const user = ensureUserSession(request, reply);
+  if (!user) return reply;
+  const rotated = appStore.rotate(user.appId);
+  if (!rotated) return sendError(reply, 409, { message: 'This user API profile is unavailable', type: 'invalid_request_error', code: 'user_api_profile_unavailable' });
+  audit.write({ type: 'user.api_key.rotate', requestId: request.id, appId: rotated.record.id, route: request.url, statusCode: 200, latencyMs: Date.now() - getStartedAt(request) });
+  return { ok: true, apiKey: rotated.rawKey, apiKeyPreview: rotated.record.keyPreview };
+});
+
+app.get('/admin/users', async (request, reply) => {
+  if (!ensureAdmin(request, reply)) return reply;
+  return { ok: true, users: userStore.list().map((user) => ({ id: user.id, username: user.username, apiKeyCount: accountIdsForUser(user.id).length, createdAt: user.createdAt })) };
+});
+
+app.post<{ Body: { username?: string; password?: string } }>('/admin/users', async (request, reply) => {
+  if (!ensureAdmin(request, reply)) return reply;
+  const username = String(request.body?.username ?? '');
+  const password = String(request.body?.password ?? '');
+  try {
+    const created = createSelfServiceUser(username, password);
+    audit.write({ type: 'admin.user.created', requestId: request.id, appId: created.user.appId, route: request.url, statusCode: 201, latencyMs: Date.now() - getStartedAt(request) });
+    return reply.code(201).send({ ok: true, user: { id: created.user.id, username: created.user.username, apiKeyCount: 0, createdAt: created.user.createdAt }, apiKey: created.apiKey });
+  } catch (error) {
+    return sendError(reply, 400, { message: error instanceof Error ? error.message : String(error), type: 'invalid_request_error', code: 'user_create_failed' });
+  }
+});
+
+app.delete<{ Params: { id: string } }>('/admin/users/:id', async (request, reply) => {
+  if (!ensureAdmin(request, reply)) return reply;
+  const user = userStore.findById(request.params.id);
+  if (!user) return sendError(reply, 404, { message: 'User not found', type: 'invalid_request_error', code: 'user_not_found' });
+  const removedKeyCount = accountIdsForUser(user.id).length;
+  config.geminiApi.keys = config.geminiApi.keys.filter((key) => key.userId !== user.id);
+  if (removedKeyCount > 0) applyGeminiAccounts();
+  appStore.revoke(user.appId);
+  userStore.remove(user.id);
+  audit.write({ type: 'admin.user.deleted', requestId: request.id, appId: user.appId, route: request.url, statusCode: 200, latencyMs: Date.now() - getStartedAt(request) });
+  return { ok: true, deleted: { id: user.id, username: user.username, apiKeyCount: removedKeyCount } };
 });
 
 // ---- Outbound proxy management (off by default; not yet applied to upstreams) ----
@@ -3393,6 +3784,8 @@ app.post<{
     const options = buildSessionOptions({
       model: resolvedModel.model,
       allowedModelIds: resolvedModel.allowedModelIds,
+      geminiApiKeyIds: selectedApp.geminiApiKeyIds,
+      geminiApiOwnerUserId: selectedApp.ownerUserId,
       maxTokens: typeof body.maxTokens === 'number' ? body.maxTokens : undefined,
       temperature: typeof body.temperature === 'number' ? body.temperature : undefined,
       sessionNamespace: selectedApp.sessionNamespace,
@@ -3732,6 +4125,7 @@ app.post<{
     name?: string;
     allowedOrigins?: string[];
     allowedModels?: string[];
+    geminiApiKeyIds?: string[];
     sessionNamespace?: string;
     rateLimitPerMinute?: number;
     maxConcurrency?: number;
@@ -3752,10 +4146,20 @@ app.post<{
   if (rawKey && appStore.verify(rawKey)) {
     return sendError(reply, 409, { message: 'API key already in use', type: 'invalid_request_error', code: 'duplicate_api_key' });
   }
+  const geminiApiAccounts = parseGeminiApiKeyIds(body.geminiApiKeyIds);
+  if (geminiApiAccounts.unknownIds.length > 0) {
+    return sendError(reply, 400, {
+      message: `Unknown Gemini account IDs: ${geminiApiAccounts.unknownIds.join(', ')}`,
+      type: 'invalid_request_error',
+      code: 'unknown_gemini_account_id',
+      param: 'geminiApiKeyIds',
+    });
+  }
   const created = appStore.create({
     name: String(body.name ?? '').trim() || 'local-app',
     allowedOrigins: Array.isArray(body.allowedOrigins) ? body.allowedOrigins : config.bootstrapApp.allowedOrigins,
     allowedModels: normalizeAllowedModels(body.allowedModels),
+    geminiApiKeyIds: geminiApiAccounts.ids,
     sessionNamespace: String(body.sessionNamespace ?? body.name ?? 'local-app'),
     rateLimitPerMinute:
       typeof body.rateLimitPerMinute === 'number' ? body.rateLimitPerMinute : config.bootstrapApp.rateLimitPerMinute,
@@ -3783,6 +4187,7 @@ app.put<{
     name?: string;
     allowedOrigins?: string[];
     allowedModels?: string[];
+    geminiApiKeyIds?: string[];
     sessionNamespace?: string;
     rateLimitPerMinute?: number;
     maxConcurrency?: number;
@@ -3790,10 +4195,20 @@ app.put<{
 }>('/admin/apps/:id', async (request, reply) => {
   if (!ensureAdmin(request, reply)) return reply;
   const body = request.body ?? {};
+  const geminiApiAccounts = parseGeminiApiKeyIds(body.geminiApiKeyIds);
+  if (geminiApiAccounts.unknownIds.length > 0) {
+    return sendError(reply, 400, {
+      message: `Unknown Gemini account IDs: ${geminiApiAccounts.unknownIds.join(', ')}`,
+      type: 'invalid_request_error',
+      code: 'unknown_gemini_account_id',
+      param: 'geminiApiKeyIds',
+    });
+  }
   const updated = appStore.update(request.params.id, {
     name: typeof body.name === 'string' ? body.name : undefined,
     allowedOrigins: Array.isArray(body.allowedOrigins) ? body.allowedOrigins : undefined,
     allowedModels: Array.isArray(body.allowedModels) ? normalizeAllowedModels(body.allowedModels) : undefined,
+    geminiApiKeyIds: Array.isArray(body.geminiApiKeyIds) ? geminiApiAccounts.ids : undefined,
     sessionNamespace: typeof body.sessionNamespace === 'string' ? body.sessionNamespace : undefined,
     rateLimitPerMinute: typeof body.rateLimitPerMinute === 'number' ? body.rateLimitPerMinute : undefined,
     maxConcurrency: typeof body.maxConcurrency === 'number' ? body.maxConcurrency : undefined,

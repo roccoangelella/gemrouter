@@ -1,22 +1,26 @@
 // Ordered strongest -> weakest. The strong, low-RPD flagships are tried first for
-// quality; the high-RPD lite/gemma models sit at the tail so the fallback chain has
-// large daily headroom (3.1-flash-lite 500/key, gemma 1500/key) before "busy".
+// quality; the high-RPD 3.1-flash-lite models sit at the tail so the fallback chain has
+// large daily headroom (500/key) before "busy". No gemini-2.5-flash or gemma models —
+// removed from the cascade on request. gemini-3.6-flash (newest flagship) leads and
+// gemini-3.5-flash-lite sits 3rd, ahead of the older gemini-3 models, on request 2026-07-22.
 export const DEFAULT_DIRECT_MODEL_IDS = [
+  'gemini-3.6-flash',
   'gemini-3.5-flash',
+  'gemini-3.5-flash-lite',
+  'gemini-3-flash',
   'gemini-3-flash-preview',
-  'gemini-2.5-flash',
   'gemini-3.1-flash-lite',
-  'gemma-4-31b-it',
-  'gemma-4-26b-a4b-it',
+  'gemini-3.1-flash-lite-preview',
 ] as const;
 
 export const DEFAULT_FREE_TIER_TEXT_MODEL_IDS = [
+  'gemini-3.6-flash',
   'gemini-3.5-flash',
+  'gemini-3.5-flash-lite',
+  'gemini-3-flash',
   'gemini-3-flash-preview',
-  'gemini-2.5-flash',
   'gemini-3.1-flash-lite',
-  'gemma-4-31b-it',
-  'gemma-4-26b-a4b-it',
+  'gemini-3.1-flash-lite-preview',
 ] as const;
 
 export const DEFAULT_FREE_TIER_AUDIO_MODEL_IDS = [
@@ -31,12 +35,13 @@ export const DEFAULT_FREE_TIER_EMBEDDING_MODEL_IDS = [
 ] as const;
 
 export const DEFAULT_TEXT_FALLBACK_MODEL_IDS = [
+  'gemini-3.6-flash',
   'gemini-3.5-flash',
+  'gemini-3.5-flash-lite',
+  'gemini-3-flash',
   'gemini-3-flash-preview',
-  'gemini-2.5-flash',
   'gemini-3.1-flash-lite',
-  'gemma-4-31b-it',
-  'gemma-4-26b-a4b-it',
+  'gemini-3.1-flash-lite-preview',
 ] as const;
 
 export interface PublicModelDescriptor {

@@ -17,7 +17,7 @@ function loadPngDataUri(fileName: string): string {
 const UI_ICON_DATA_URI = loadPngDataUri('GemRouter_Icon_logo256.png');
 const UI_WORDMARK_DATA_URI = loadPngDataUri('GemRouter_Wordmark.png');
 
-function svgIcon(name: 'activity' | 'admin' | 'api' | 'bolt' | 'browser' | 'chart' | 'health' | 'menu' | 'moon' | 'plug' | 'route' | 'sun'): string {
+function svgIcon(name: 'activity' | 'admin' | 'api' | 'bolt' | 'browser' | 'chart' | 'health' | 'menu' | 'moon' | 'plug' | 'route' | 'sun' | 'user'): string {
   const paths: Record<typeof name, string> = {
     activity: '<path d="M3 12h4l2-7 4 14 2-7h6"/>',
     admin: '<path d="M12 3l7 4v5c0 4.4-2.8 7.2-7 9-4.2-1.8-7-4.6-7-9V7l7-4z"/><path d="M9.5 12.5l1.7 1.7 3.8-4.4"/>',
@@ -31,6 +31,7 @@ function svgIcon(name: 'activity' | 'admin' | 'api' | 'bolt' | 'browser' | 'char
     plug: '<path d="M9 7V3"/><path d="M15 7V3"/><path d="M7 7h10v4a5 5 0 0 1-10 0V7z"/><path d="M12 16v5"/>',
     route: '<circle cx="6" cy="6" r="3"/><circle cx="18" cy="18" r="3"/><path d="M9 6h3a4 4 0 0 1 4 4v5"/>',
     sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="M4.9 4.9l1.4 1.4"/><path d="M17.7 17.7l1.4 1.4"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="M4.9 19.1l1.4-1.4"/><path d="M17.7 6.3l1.4-1.4"/>',
+    user: '<circle cx="12" cy="8" r="3.5"/><path d="M4.5 21a7.5 7.5 0 0 1 15 0"/>',
   };
   return `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">${paths[name]}</svg>`;
 }
@@ -49,6 +50,7 @@ export function renderAppShell(input: {
   modelIds: string[];
   publicBaseUrl?: string;
   socialPreviewUrl?: string;
+  googleOAuthEnabled?: boolean;
 }): string {
   const bootstrap = JSON.stringify(input).replace(/</g, '\\u003c');
   const pageTitle = `${input.projectName} - Gemini API Compatibility Router`;
@@ -110,27 +112,25 @@ export function renderAppShell(input: {
     <style>
       :root {
         color-scheme: dark;
-        --bg: #070713;
-        --bg-soft: #101120;
-        --surface: rgba(15, 17, 33, 0.9);
-        --surface-strong: rgba(22, 24, 45, 0.97);
-        --surface-muted: rgba(20, 23, 43, 0.82);
-        --line: rgba(86, 242, 255, 0.12);
-        --line-strong: rgba(255, 62, 201, 0.24);
-        --text: #f8f7ff;
-        --muted: #a9abc4;
-        --accent: #18f0d0;
-        --accent-soft: #ff3ec9;
-        --good: #51ff9b;
-        --warn: #ffd166;
-        --bad: #ff5f8f;
-        --shadow: 0 28px 90px rgba(0, 0, 0, 0.48), 0 0 60px rgba(24, 240, 208, 0.06);
-        /* Squared house style: no rounded corners, tight uniform gap between frames,
-           dapp-style 15px inner padding. */
-        --radius: 0px;
-        --radius-sm: 0px;
-        --frame-gap: 5px;
-        --frame-pad: 15px;
+        --bg: #101114;
+        --bg-soft: #17191e;
+        --surface: #1b1e24;
+        --surface-strong: #22262e;
+        --surface-muted: #15181d;
+        --line: rgba(255, 255, 255, 0.09);
+        --line-strong: rgba(109, 214, 183, 0.48);
+        --text: #f3f5f4;
+        --muted: #a5aca8;
+        --accent: #6bd6b7;
+        --accent-soft: #8ba8ff;
+        --good: #72d99c;
+        --warn: #edc46c;
+        --bad: #ef7d92;
+        --shadow: 0 12px 36px rgba(0, 0, 0, 0.18);
+        --radius: 10px;
+        --radius-sm: 7px;
+        --frame-gap: 16px;
+        --frame-pad: 22px;
       }
       [data-theme="light"] {
         color-scheme: light;
@@ -155,15 +155,7 @@ export function renderAppShell(input: {
       body {
         margin: 0;
         font-family: "Eurostile", "Bank Gothic", "Rajdhani", "Avenir Next", "Segoe UI", sans-serif;
-        background:
-          linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px),
-          linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px),
-          radial-gradient(circle at 14% 8%, rgba(255, 62, 201, 0.2), transparent 26%),
-          radial-gradient(circle at 86% 16%, rgba(24, 240, 208, 0.2), transparent 30%),
-          radial-gradient(circle at 50% 96%, rgba(255, 209, 102, 0.1), transparent 34%),
-          linear-gradient(180deg, var(--bg) 0%, var(--bg-soft) 54%, var(--bg) 100%);
-        background-size: 42px 42px, 42px 42px, auto, auto, auto, auto;
-        background-attachment: fixed, fixed, fixed, fixed, fixed, fixed;
+        background: linear-gradient(180deg, var(--bg), var(--bg-soft));
         color: var(--text);
       }
       a { color: inherit; text-decoration: none; }
@@ -171,27 +163,22 @@ export function renderAppShell(input: {
       h1, h2, h3, h4, p { margin: 0; }
       .hidden { display: none !important; }
       .app-shell {
-        width: min(1480px, calc(100vw - 28px));
-        margin: var(--frame-gap) auto 28px;
+        width: min(1180px, calc(100vw - 32px));
+        margin: 32px auto 48px;
         display: grid;
         gap: var(--frame-gap);
       }
       .panel {
         background: var(--surface);
         border: 1px solid var(--line);
-        border-radius: 0;
+        border-radius: var(--radius);
         box-shadow: var(--shadow);
-        backdrop-filter: blur(18px);
+        backdrop-filter: none;
         position: relative;
         overflow: visible;
       }
       .panel::before {
-        content: "";
-        position: absolute;
-        inset: 0;
-        pointer-events: none;
-        background: linear-gradient(120deg, rgba(255, 62, 201, 0.06), transparent 32%, rgba(24, 240, 208, 0.05));
-        opacity: 0.75;
+        display: none;
       }
       .panel > * { position: relative; z-index: 1; }
       .nav {
@@ -208,10 +195,108 @@ export function renderAppShell(input: {
         top: 0;
         z-index: 50;
         width: 100%;
+        border-radius: 0;
         border-left: 0;
         border-right: 0;
         border-top: 0;
-        box-shadow: none;
+        box-shadow: 0 1px 0 var(--line);
+      }
+      .drawer-toggle {
+        display: inline-grid;
+        place-items: center;
+        width: 42px;
+        height: 42px;
+        padding: 0;
+        border-radius: var(--radius-sm);
+      }
+      .drawer-scrim {
+        position: fixed;
+        inset: 0;
+        z-index: 80;
+        background: rgba(0, 0, 0, 0.46);
+        opacity: 0;
+        transition: opacity 180ms ease;
+      }
+      .app-drawer {
+        position: fixed;
+        inset: 0 auto 0 0;
+        z-index: 90;
+        display: flex;
+        flex-direction: column;
+        width: min(288px, calc(100vw - 34px));
+        padding: 20px 14px 14px;
+        background: var(--surface-strong);
+        border-right: 1px solid var(--line);
+        box-shadow: 20px 0 48px rgba(0, 0, 0, 0.28);
+        transform: translateX(-104%);
+        transition: transform 220ms cubic-bezier(0.2, 0.75, 0.2, 1);
+      }
+      .drawer-scrim.is-open { opacity: 1; }
+      .app-drawer.is-open { transform: translateX(0); }
+      .drawer-header, .drawer-footer {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .drawer-header {
+        padding: 0 8px 18px;
+        border-bottom: 1px solid var(--line);
+      }
+      .drawer-header strong { font-size: 16px; }
+      .drawer-session {
+        padding: 16px 8px 10px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .drawer-nav {
+        display: grid;
+        gap: 4px;
+      }
+      .drawer-nav-label {
+        margin: 16px 8px 6px;
+        color: var(--muted);
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+      .drawer-nav button {
+        width: 100%;
+        padding: 10px 12px;
+        text-align: left;
+        border: 1px solid transparent;
+        border-radius: var(--radius-sm);
+        background: transparent;
+        color: var(--text);
+      }
+      .drawer-nav button:hover, .drawer-nav button.is-active {
+        border-color: var(--line);
+        background: rgba(107, 214, 183, 0.13);
+      }
+      .drawer-footer {
+        margin-top: auto;
+        padding: 14px 8px 0;
+        border-top: 1px solid var(--line);
+      }
+      .drawer-footer button { flex: 1; padding: 9px 10px; }
+      .page-kicker {
+        margin: 0 0 -4px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      #admin-dashboard .role-banner, #user-dashboard .role-banner { display: none; }
+      #admin-dashboard .workspace-layout, #user-dashboard .workspace-layout { display: block; }
+      #admin-dashboard .workspace-sidebar, #user-dashboard .workspace-sidebar { display: none; }
+      #admin-dashboard .workspace-content, #user-dashboard .workspace-content { display: grid; gap: var(--frame-gap); }
+      .page-enter {
+        animation: page-enter 220ms ease-out both;
+      }
+      @keyframes page-enter {
+        from { opacity: 0; transform: translateY(8px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after { animation-duration: 1ms !important; transition-duration: 1ms !important; scroll-behavior: auto !important; }
       }
       .brand {
         display: flex;
@@ -576,6 +661,48 @@ export function renderAppShell(input: {
       #admin-dashboard {
         display: grid;
         gap: var(--frame-gap);
+      }
+      .workspace-layout {
+        display: grid;
+        grid-template-columns: 188px minmax(0, 1fr);
+        align-items: start;
+        gap: var(--frame-gap);
+      }
+      .workspace-sidebar {
+        position: sticky;
+        top: 14px;
+        padding: 10px;
+        border: 1px solid var(--line);
+        background: var(--surface-muted);
+      }
+      .workspace-sidebar-label {
+        padding: 4px 6px 8px;
+        color: var(--muted);
+        font: 700 10px/1.2 "IBM Plex Mono", monospace;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+      .workspace-nav {
+        display: grid;
+        gap: 4px;
+      }
+      .workspace-nav button {
+        width: 100%;
+        padding: 9px 10px;
+        text-align: left;
+        background: transparent;
+        border-color: transparent;
+        font-size: 13px;
+      }
+      .workspace-nav button:hover,
+      .workspace-nav button.is-active {
+        border-color: var(--line-strong);
+        background: rgba(16, 163, 127, 0.12);
+      }
+      .workspace-content {
+        display: grid;
+        gap: var(--frame-gap);
+        min-width: 0;
       }
       .section {
         padding: var(--frame-pad);
@@ -1276,6 +1403,15 @@ export function renderAppShell(input: {
         .footer-columns {
           grid-template-columns: repeat(2, minmax(0, 1fr));
         }
+        .workspace-layout {
+          grid-template-columns: 1fr;
+        }
+        .workspace-sidebar {
+          position: static;
+        }
+        .workspace-nav {
+          grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+        }
       }
       @media (max-width: 760px) {
         .app-shell {
@@ -1309,6 +1445,7 @@ export function renderAppShell(input: {
   <body>
     ${hiddenSocialPreview}
     <header class="panel nav site-header">
+        <button id="drawer-toggle" type="button" class="drawer-toggle secondary" aria-label="Open navigation" aria-controls="app-drawer" aria-expanded="false">${svgIcon('menu')}</button>
         <div class="brand">
           <div class="brand-mark">${brandMark}</div>
           <div class="brand-copy">
@@ -1316,14 +1453,11 @@ export function renderAppShell(input: {
           </div>
         </div>
         <div class="nav-actions nav-menu">
-          <button id="theme-toggle" type="button" class="icon-btn" aria-label="Toggle theme" title="Toggle theme">${svgIcon('moon')}</button>
-          <a id="health-link" class="icon-btn" href="/health" target="_blank" rel="noreferrer" aria-label="Health JSON" title="Health JSON">${svgIcon('health')}</a>
-          <button id="menu-refresh-button" type="button" class="icon-btn" aria-label="Refresh" title="Refresh">${svgIcon('activity')}</button>
-          <button id="menu-toggle" type="button" class="icon-btn" aria-label="Open admin login" title="Admin login">${svgIcon('admin')}</button>
+          <button id="menu-toggle" type="button" class="icon-btn" aria-label="Open sign in" title="Sign in">${svgIcon('user')}</button>
           <div id="top-menu" class="menu-popover hidden">
             <div class="hero-card" style="padding:14px">
-              <h2>${svgIcon('admin')} Admin Login</h2>
-              <p>Use the dashboard credentials from <span class="mono">.env</span>. The session is stored in an HttpOnly cookie.</p>
+              <h2>${svgIcon('admin')} Sign in</h2>
+              <p>Users sign in here to manage their own Gemini API keys. The administrator uses the dashboard credentials from <span class="mono">.env</span>.</p>
               <div id="auth-summary" class="status" style="margin-top:12px">Loading session state…</div>
               <form id="login-form" style="margin-top:12px">
                 <label>
@@ -1339,53 +1473,72 @@ export function renderAppShell(input: {
                   <button id="menu-logout-button" type="button" class="warn">${svgIcon('plug')} Log out</button>
                 </div>
               </form>
+              <div style="margin-top:14px; padding-top:14px; border-top:1px solid var(--line)">
+                <button id="signup-toggle" type="button" class="secondary" style="width:100%">Create an account</button>
+                <form id="signup-form" class="hidden" style="margin-top:12px" autocomplete="off">
+                  <label>Username<input type="text" name="username" autocomplete="username" minlength="3" maxlength="64" placeholder="your-name" required /></label>
+                  <label>Password<input type="password" name="password" autocomplete="new-password" minlength="12" maxlength="256" placeholder="12–256 characters" required /></label>
+                  <label>Confirm password<input type="password" name="confirmPassword" autocomplete="new-password" minlength="12" maxlength="256" required /></label>
+                  <div class="button-row"><button type="submit">Create account</button></div>
+                  <div id="signup-status" class="status" style="margin-top:8px"></div>
+                </form>
+              </div>
+              <div id="google-login-container" class="hidden" style="margin-top:12px; border-top: 1px solid var(--line); padding-top: 12px; text-align: center;">
+                <div style="font-size:11px; color:rgba(255,255,255,0.4); margin-bottom:8px;">or continue with Google</div>
+                <a href="/auth/google" id="google-login-btn" class="button google-btn" style="display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; border: 1px solid var(--line); border-radius: 4px; padding: 10px; background: rgba(255,255,255,0.05); color: var(--text); text-decoration: none; font-weight: 500; font-size: 13px;">
+                  <svg width="18" height="18" viewBox="0 0 18 18" style="display:block;"><path fill="#4285F4" d="M17.64 9.2c0-.63-.06-1.25-.16-1.84H9v3.47h4.84a4.14 4.14 0 0 1-1.8 2.71v2.26h2.91c1.7-1.56 2.69-3.86 2.69-6.6z"/><path fill="#34A853" d="M9 18c2.43 0 4.47-.8 5.96-2.2l-2.91-2.26a5.6 5.6 0 0 1-8.58-2.96H.48v2.33A9 9 0 0 0 9 18z"/><path fill="#FBBC05" d="M3.47 10.58a5.39 5.39 0 0 1 0-3.16V5.09H.48a9 9 0 0 0 0 7.82l2.99-2.33z"/><path fill="#EA4335" d="M9 3.58c1.32 0 2.5.45 3.44 1.35l2.58-2.59A9 9 0 0 0 .48 5.09l2.99 2.33a5.6 5.6 0 0 1 8.58-2.93z"/></svg>
+                  Sign in with Google
+                </a>
+              </div>
               <div id="auth-status" class="status" style="margin-top:10px"></div>
-              <div class="footer-note" style="margin-top:12px">Admin actions stay in this browser session and use the same backend APIs exposed by GemRouter.</div>
+              <div class="footer-note" style="margin-top:12px">Your browser session is stored in an HttpOnly cookie.</div>
             </div>
           </div>
         </div>
     </header>
+    <div id="drawer-scrim" class="drawer-scrim hidden" aria-hidden="true"></div>
+    <aside id="app-drawer" class="app-drawer hidden" aria-label="Main navigation" aria-hidden="true">
+      <div class="drawer-header">
+        <button id="drawer-close" type="button" class="icon-btn" aria-label="Close navigation">×</button>
+        <strong>GemRouter</strong>
+      </div>
+      <div id="drawer-session" class="drawer-session">Sign in to open your workspace.</div>
+      <nav id="drawer-guest-nav" class="drawer-nav">
+        <button id="drawer-signin" type="button">Sign in</button>
+      </nav>
+      <nav id="drawer-user-nav" class="drawer-nav hidden" aria-label="User pages">
+        <div class="drawer-nav-label">Your workspace</div>
+        <button type="button" data-workspace-nav="user" data-window-target="user-overview">My usage</button>
+        <button type="button" data-workspace-nav="user" data-window-target="user-api">OpenAI endpoint</button>
+        <button type="button" data-workspace-nav="user" data-window-target="user-keys">Gemini keys</button>
+      </nav>
+      <nav id="drawer-admin-nav" class="drawer-nav hidden" aria-label="Admin pages">
+        <div class="drawer-nav-label">Admin workspace</div>
+        <button type="button" data-workspace-nav="admin" data-window-target="admin-overview">My usage</button>
+        <button type="button" data-workspace-nav="admin" data-window-target="admin-users">Users</button>
+        <button type="button" data-workspace-nav="admin" data-window-target="admin-accounts">Gemini accounts</button>
+        <button type="button" data-workspace-nav="admin" data-window-target="admin-apps">Client apps</button>
+        <button type="button" data-workspace-nav="admin" data-window-target="admin-routing">Routing</button>
+        <button type="button" data-workspace-nav="admin" data-window-target="admin-models">Models</button>
+        <button type="button" data-workspace-nav="admin" data-window-target="admin-tools">Tools &amp; settings</button>
+      </nav>
+      <div id="drawer-actions" class="drawer-footer hidden">
+        <button id="drawer-refresh" type="button" class="secondary">Refresh</button>
+        <button id="drawer-logout" type="button" class="warn">Log out</button>
+      </div>
+    </aside>
 
     <main class="app-shell">
-      <section class="panel hero">
+      <section id="landing" class="panel hero">
         <div class="hero-copy">
-          <div class="activity-strip">
-            <div class="activity-head">
-              <span>Live router pulse</span>
-              <span id="activity-label">waiting for traffic</span>
-            </div>
-            <div class="heartbeat" aria-hidden="true">
-              <div class="heartbeat-line">
-                <svg viewBox="0 0 960 86" preserveAspectRatio="none">
-                  <path class="ecg-persistence" d="M0 45 H80 L92 45 L102 37 L112 51 L124 45 H176 L188 45 L198 25 L210 74 L224 10 L240 45 H312 L326 45 L338 34 L350 55 L364 45 H480 L560 45 L572 45 L582 37 L592 51 L604 45 H656 L668 45 L678 25 L690 74 L704 10 L720 45 H792 L806 45 L818 34 L830 55 L844 45 H960" />
-                  <path class="ecg-trace" d="M0 45 H80 L92 45 L102 37 L112 51 L124 45 H176 L188 45 L198 25 L210 74 L224 10 L240 45 H312 L326 45 L338 34 L350 55 L364 45 H480 L560 45 L572 45 L582 37 L592 51 L604 45 H656 L668 45 L678 25 L690 74 L704 10 L720 45 H792 L806 45 L818 34 L830 55 L844 45 H960" />
-                </svg>
-                <svg viewBox="0 0 960 86" preserveAspectRatio="none">
-                  <path class="ecg-persistence" d="M0 45 H80 L92 45 L102 37 L112 51 L124 45 H176 L188 45 L198 25 L210 74 L224 10 L240 45 H312 L326 45 L338 34 L350 55 L364 45 H480 L560 45 L572 45 L582 37 L592 51 L604 45 H656 L668 45 L678 25 L690 74 L704 10 L720 45 H792 L806 45 L818 34 L830 55 L844 45 H960" />
-                  <path class="ecg-trace" d="M0 45 H80 L92 45 L102 37 L112 51 L124 45 H176 L188 45 L198 25 L210 74 L224 10 L240 45 H312 L326 45 L338 34 L350 55 L364 45 H480 L560 45 L572 45 L582 37 L592 51 L604 45 H656 L668 45 L678 25 L690 74 L704 10 L720 45 H792 L806 45 L818 34 L830 55 L844 45 H960" />
-                </svg>
-              </div>
-              <div class="ecg-sweep"></div>
-            </div>
-          </div>
-        </div>
-        <div class="source-grid">
-          <div class="source-card">
-            <strong>${svgIcon('api')} Gemini API</strong>
-            <p>Multi-key pool with real account metadata in admin, local RPM/TPM/RPD ledger, model discovery, and quota-aware routing.</p>
-          </div>
-          <div class="source-card">
-            <strong>${svgIcon('route')} Fallback Routing</strong>
-            <p>Automatic fallback across configured API keys and allowed models when an upstream path is exhausted, rate-limited, or unavailable.</p>
-          </div>
-          <div class="source-card">
-            <strong>${svgIcon('chart')} Operator Surface</strong>
-            <p>Compatibility controls, prompt testing, quota visibility, app management, and interaction telemetry in one admin UI.</p>
-          </div>
+          <p class="page-kicker">Private Gemini routing</p>
+          <h1>Your router. Your keys.</h1>
+          <p>Sign in to manage a personal OpenAI-compatible endpoint, Gemini accounts, and usage in a focused workspace.</p>
+          <div class="button-row" style="margin-top:20px"><button id="landing-signin" type="button">Sign in</button></div>
         </div>
       </section>
 
-      <section class="panel section">
+      <section class="panel section hidden" aria-hidden="true">
         <div class="section-head">
           <div>
             <h2 class="section-title">${svgIcon('activity')} Guest Overview</h2>
@@ -1396,7 +1549,7 @@ export function renderAppShell(input: {
         <div id="public-stats" class="stats-grid"></div>
       </section>
 
-      <section class="panel section">
+      <section class="panel section hidden" aria-hidden="true">
         <div class="section-head">
           <div>
             <h3 class="section-title">${svgIcon('api')} Gemini RPD Capacity</h3>
@@ -1419,7 +1572,6 @@ export function renderAppShell(input: {
               <tbody id="public-rpd-table"></tbody>
             </table>
           </div>
-          <p class="section-copy" style="margin:18px 0 8px">Per-account daily request capacity from the same ledger used by routing. RPD resets at the next Pacific midnight.</p>
           <div class="table-wrap">
             <table class="table responsive-table quota-table public-rpd-table">
               <thead>
@@ -1437,7 +1589,7 @@ export function renderAppShell(input: {
         </div>
       </section>
 
-      <section class="panel section" id="nvidia-section" style="display:none">
+      <section class="panel section hidden" id="nvidia-section" style="display:none" aria-hidden="true">
         <div class="section-head">
           <div>
             <h3 class="section-title">${svgIcon('api')} NVIDIA NIM Models</h3>
@@ -1462,7 +1614,7 @@ export function renderAppShell(input: {
         </div>
       </section>
 
-      <section class="panel section" id="ollama-local-section" style="display:none">
+      <section class="panel section hidden" id="ollama-local-section" style="display:none" aria-hidden="true">
         <div class="section-head">
           <div>
             <h3 class="section-title">${svgIcon('chart')} Ollama Local RPD</h3>
@@ -1479,7 +1631,7 @@ export function renderAppShell(input: {
         </div>
       </section>
 
-      <section class="panel section">
+      <section class="panel section hidden" aria-hidden="true">
         <div class="chart-grid">
           <div class="chart-card">
           <div class="section-head">
@@ -1513,12 +1665,35 @@ export function renderAppShell(input: {
             <div id="admin-banner-copy" class="section-copy">Admin controls are available in this browser session.</div>
           </div>
           <div class="button-row">
+            <button id="users-jump-button" type="button">Users</button>
             <button id="refresh-button" type="button" class="secondary">Refresh</button>
             <button id="logout-button" type="button" class="warn">Log out</button>
           </div>
         </div>
 
-        <section class="panel section">
+        <div class="workspace-layout">
+          <aside class="workspace-sidebar" aria-label="Admin workspace">
+            <div class="workspace-sidebar-label">Admin workspace</div>
+            <nav class="workspace-nav">
+              <button type="button" class="is-active" data-workspace-nav="admin" data-window-target="admin-overview">My usage</button>
+              <button type="button" data-workspace-nav="admin" data-window-target="admin-users">Users</button>
+              <button type="button" data-workspace-nav="admin" data-window-target="admin-accounts">Gemini accounts</button>
+              <button type="button" data-workspace-nav="admin" data-window-target="admin-apps">Apps &amp; keys</button>
+              <button type="button" data-workspace-nav="admin" data-window-target="admin-settings">Router settings</button>
+            </nav>
+          </aside>
+          <div class="workspace-content">
+        <section class="panel section" data-window-scope="admin" data-window="admin-overview">
+          <div class="section-head">
+            <div>
+              <h3 class="section-title">My usage</h3>
+              <p class="section-copy">Usage for your own router profile, not every user on this installation.</p>
+            </div>
+          </div>
+          <div id="stats-grid" class="stats-grid"></div>
+        </section>
+
+        <section class="panel section" data-window-scope="admin" data-window="admin-routing">
           <div class="section-head">
             <div>
               <h3 class="section-title">Backend Routing</h3>
@@ -1538,7 +1713,7 @@ export function renderAppShell(input: {
           </div>
         </section>
 
-        <section class="panel section">
+        <section class="panel section" data-window-scope="admin" data-window="admin-tools">
           <div class="section-head">
             <div>
               <h3 class="section-title">${svgIcon('api')} Backup &amp; Restore</h3>
@@ -1562,7 +1737,7 @@ export function renderAppShell(input: {
           </div>
         </section>
 
-        <section class="panel section">
+        <section class="panel section" data-window-scope="admin" data-window="admin-tools">
           <div class="section-head">
             <div>
               <h3 class="section-title">${svgIcon('api')} Provider Diagnostics</h3>
@@ -1580,7 +1755,7 @@ export function renderAppShell(input: {
           </div>
         </section>
 
-        <section class="panel section">
+        <section class="panel section" data-window-scope="admin" data-window="admin-accounts">
           <div class="section-head">
             <div>
               <h3 class="section-title">${svgIcon('api')} Gemini Accounts</h3>
@@ -1627,7 +1802,7 @@ export function renderAppShell(input: {
           </div>
         </section>
 
-        <section class="panel section">
+        <section class="panel section" data-window-scope="admin" data-window="admin-tools">
           <div class="section-head">
             <div>
               <h3 class="section-title">${svgIcon('plug')} Outbound Proxy</h3>
@@ -1661,7 +1836,7 @@ export function renderAppShell(input: {
           </div>
         </section>
 
-        <section class="panel section">
+        <section class="panel section" data-window-scope="admin" data-window="admin-models">
           <div class="section-head">
             <div>
               <h3 class="section-title">${svgIcon('route')} Routed Models</h3>
@@ -1693,7 +1868,7 @@ export function renderAppShell(input: {
         </section>
 
 
-        <section class="panel section">
+        <section class="panel section" data-window-scope="admin" data-window="admin-tools">
           <div class="section-head">
             <div>
               <h3 class="section-title">Compatibility Surfaces</h3>
@@ -1773,7 +1948,7 @@ export function renderAppShell(input: {
           </div>
         </section>
 
-        <section class="panel section">
+        <section class="panel section" data-window-scope="admin" data-window="admin-apps">
           <div class="section-head">
             <div>
               <h3 class="section-title">Apps and API Keys</h3>
@@ -1812,6 +1987,11 @@ export function renderAppShell(input: {
                   <input type="text" name="sessionNamespace" placeholder="client-app" />
                 </label>
                 <label>
+                  Gemini account IDs
+                  <textarea class="compact-textarea" rows="1" name="geminiApiKeyIds" placeholder="account1, account2"></textarea>
+                  <div class="footer-note">Leave empty to use the shared pool. Set IDs to isolate this app to only those accounts, including its fallback cascade.</div>
+                </label>
+                <label>
                   <span class="field-inline">Custom API key <span class="field-help" title="Optional. Empty = auto-generate. Ending in '_' (e.g. esempio_) = brand prefix, a random suffix is appended. A full value is stored verbatim.">?</span></span>
                   <input type="text" name="apiKey" placeholder="(optional) esempio_ = prefix · or a full key" autocomplete="off" />
                 </label>
@@ -1847,7 +2027,40 @@ export function renderAppShell(input: {
           </div>
         </section>
 
-        <section class="panel section">
+        <section class="panel section" data-window-scope="admin" data-window="admin-global">
+          <div class="section-head">
+            <div>
+              <h3 class="section-title">${svgIcon('api')} Model Reliability</h3>
+              <p class="section-copy">Requests, success rate, and failure reasons per requested model — helps tell "quota momentarily unavailable" apart from a real outage.</p>
+            </div>
+            <div class="section-head-actions">
+              <button type="button" class="secondary section-toggle" data-section-toggle="model-stats-section-body" aria-controls="model-stats-section-body" aria-expanded="true">
+                <span class="section-toggle-label">Collapse</span>
+                <span class="section-toggle-arrow" aria-hidden="true">▸</span>
+              </button>
+            </div>
+          </div>
+          <div id="model-stats-section-body" class="section-body">
+          <div class="table-wrap">
+            <table class="table responsive-table">
+              <thead>
+                <tr>
+                  <th>Model</th>
+                  <th>Requests</th>
+                  <th>Success</th>
+                  <th>Failed</th>
+                  <th>Success rate</th>
+                  <th>Avg latency</th>
+                  <th>Top failure reasons</th>
+                </tr>
+              </thead>
+              <tbody id="model-stats-table"></tbody>
+            </table>
+          </div>
+          </div>
+        </section>
+
+        <section class="panel section" data-window-scope="admin" data-window="admin-global">
           <div class="section-head">
             <div>
               <h3 class="section-title">Recent Interactions</h3>
@@ -1893,73 +2106,63 @@ export function renderAppShell(input: {
           </div>
           </div>
         </section>
+        <section id="users-section" class="panel section" data-window-scope="admin" data-window="admin-users">
+          <div class="section-head">
+            <div>
+              <h3 class="section-title">Users</h3>
+              <p class="section-copy">Create login accounts, see each user’s connected Gemini API keys, or remove a user and their isolated key pool.</p>
+            </div>
+          </div>
+          <div class="shell-grid apps-shell">
+            <form id="user-form">
+              <label>Username<input type="text" name="username" autocomplete="username" placeholder="friend" required /></label>
+              <label>Password<input type="password" name="password" autocomplete="new-password" minlength="12" placeholder="At least 12 characters" required /></label>
+              <div class="button-row"><button type="submit">Create user</button></div>
+              <div id="user-status" class="status"></div>
+            </form>
+            <div class="table-wrap"><table class="table"><thead><tr><th>Username</th><th>Gemini API keys</th><th>Created</th><th></th></tr></thead><tbody id="users-table"></tbody></table></div>
+          </div>
+        </section>
+          </div>
+        </div>
       </section>
-      <footer class="panel app-footer">
-        <div class="footer-grid">
-          <div class="footer-brand">
-            <div class="footer-brand-top">
-              <svg class="footer-brand-mark" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                <path d="M20 4L6 36H14L20 22L26 36H34L20 4Z" fill="currentColor" />
-                <path d="M20 12V22" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-              </svg>
-              <span>AIRewardrop</span>
-            </div>
-            <p class="footer-brand-copy">Autonomous agent infrastructure for crypto.</p>
-            <a class="footer-blog-link" href="https://airewardrop.xyz/blog" target="_blank" rel="noreferrer">Our Blog →</a>
+
+      <section id="user-dashboard" class="hidden">
+        <div class="role-banner panel">
+          <div><strong id="user-banner-title">Your GemRouter profile</strong><div class="section-copy">Your Gemini keys and cascade are isolated from every other user.</div></div>
+          <div class="button-row"><button id="user-refresh-button" type="button" class="secondary">Refresh</button><button id="user-logout-button" type="button" class="warn">Log out</button></div>
+        </div>
+        <div class="workspace-layout">
+          <aside class="workspace-sidebar" aria-label="Your workspace">
+            <div class="workspace-sidebar-label">Your workspace</div>
+            <nav class="workspace-nav">
+              <button type="button" class="is-active" data-workspace-nav="user" data-window-target="user-overview">My usage</button>
+              <button type="button" data-workspace-nav="user" data-window-target="user-api">OpenAI endpoint</button>
+              <button type="button" data-workspace-nav="user" data-window-target="user-keys">Gemini keys</button>
+            </nav>
+          </aside>
+          <div class="workspace-content">
+        <section class="panel section" data-window-scope="user" data-window="user-overview">
+          <div class="section-head"><div><h3 class="section-title">My usage</h3><p class="section-copy">Requests made with your own API key and Gemini accounts.</p></div></div>
+          <div id="user-stats-grid" class="stats-grid"></div>
+        </section>
+        <section class="panel section" data-window-scope="user" data-window="user-api">
+          <div class="section-head"><div><h3 class="section-title">OpenAI endpoint</h3><p class="section-copy">Use this URL and your personal client API key in any OpenAI-compatible application.</p></div></div>
+          <div class="shell-grid apps-shell">
+            <div><label>Base URL<input id="user-api-base-url" type="text" readonly /></label><label>Current API key<input id="user-api-key-preview" type="text" readonly /></label><div class="button-row"><button id="user-api-key-rotate" type="button" class="warn">Rotate API key</button></div><div id="user-api-status" class="status"></div></div>
+            <div class="mono-box" id="user-models">Loading allowed models…</div>
           </div>
-          <div class="footer-columns">
-            <div class="footer-column">
-              <h4>Navigate</h4>
-              <a href="https://airewardrop.xyz/products" target="_blank" rel="noreferrer">Products</a>
-              <a href="https://airewardrop.xyz/agents" target="_blank" rel="noreferrer">Agents</a>
-              <a href="https://airewardrop.xyz/roadmap" target="_blank" rel="noreferrer">Roadmap</a>
-              <a href="https://airewardrop.xyz/clients" target="_blank" rel="noreferrer">Clients</a>
-            </div>
-            <div class="footer-column">
-              <h4>Resources</h4>
-              <a href="https://airewardrop.xyz/commands" target="_blank" rel="noreferrer">User Manual</a>
-              <a href="https://airewardrop.xyz/tokenomics" target="_blank" rel="noreferrer">Tokenomics</a>
-              <a href="https://airewardrop.xyz/api-plugins" target="_blank" rel="noreferrer">API &amp; Plugins</a>
-              <a href="https://airewardrop.xyz/faq" target="_blank" rel="noreferrer">FAQ</a>
-            </div>
-            <div class="footer-column">
-              <h4>Community</h4>
-              <a href="https://t.me/AIRewardrop" target="_blank" rel="noreferrer">Telegram Channel</a>
-              <a href="https://t.me/AIR3Community" target="_blank" rel="noreferrer">Telegram Community</a>
-              <a href="https://discord.gg/S4f87VdsHt" target="_blank" rel="noreferrer">Discord</a>
-            </div>
-            <div class="footer-column">
-              <h4>Legal</h4>
-              <a href="https://airewardrop.xyz/legal" target="_blank" rel="noreferrer">Terms of Service</a>
-              <a href="https://airewardrop.xyz/legal" target="_blank" rel="noreferrer">Privacy Policy</a>
-              <a href="https://airewardrop.xyz/legal" target="_blank" rel="noreferrer">Cookie Policy</a>
-            </div>
+        </section>
+        <section class="panel section" data-window-scope="user" data-window="user-keys">
+          <div class="section-head"><div><h3 class="section-title">Your Gemini API keys</h3><p class="section-copy">Only these keys can be used by your OpenAI endpoint and its fallback cascade.</p></div></div>
+          <div class="shell-grid apps-shell">
+            <form id="user-account-form"><label>Gemini API key<input name="key" type="password" autocomplete="off" placeholder="AIza…" required /></label><label>Project ID <span class="muted">(optional)</span><input name="projectId" type="text" placeholder="projects/123…" /></label><div class="button-row"><button type="submit">Add key</button></div><div id="user-account-status" class="status"></div></form>
+            <div class="table-wrap"><table class="table"><thead><tr><th>Account</th><th>Project</th><th>Status</th><th></th></tr></thead><tbody id="user-accounts-table"></tbody></table></div>
+          </div>
+        </section>
           </div>
         </div>
-        <div class="footer-bottom">
-          <div class="footer-legal">
-            <div>© 2025 AIRewardrop. All rights reserved.</div>
-            <div>Disclaimer: Not financial advice. Always do your own research.</div>
-          </div>
-          <div class="footer-socials">
-            <a class="footer-social-link" href="https://x.com/AIRewardrop" target="_blank" rel="noreferrer" aria-label="X / Twitter">
-              <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
-              </svg>
-            </a>
-            <a class="footer-social-link" href="https://t.me/AIR3Community" target="_blank" rel="noreferrer" aria-label="Telegram">
-              <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                <path d="M11.944 0A12 12 0 000 12a12 12 0 0012 12 12 12 0 0012-12A12 12 0 0012 0zm5.043 7.924c-.234-.94-.83-1.21-1.42.21L11.79 12.2l-3.26-1.026c-1.154-.384-1.153-1.144.24-1.523l8.693-2.9c.9-.3 1.623.192 1.348 1.487l-1.9 8.54c-.23 1.053-1.002 1.3-1.802.82l-3.514-2.58-1.7 1.64c-.19.19-.35.35-.69.35-.46 0-.62-.16-.69-.77l.25-2.22 5.02-4.52c.46-.43-.1-.68-.69-.26l-6.3 3.97-3.34-1.04c-1.02-.31-1.05-.98.24-1.42l1.33-.45z" />
-              </svg>
-            </a>
-            <a class="footer-social-link" href="https://discord.gg/S4f87VdsHt" target="_blank" rel="noreferrer" aria-label="Discord">
-              <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                <path d="M20.317 4.369A19.791 19.791 0 0016.556 3c-.215.39-.463.917-.636 1.333a18.626 18.626 0 00-3.848 0A12.64 12.64 0 0011.436 3a19.736 19.736 0 00-3.762 1.385c-2.381 3.49-3.025 6.892-2.701 10.24a19.903 19.903 0 003.996 2.02c.33-.452.624-.934.873-1.442a12.815 12.815 0 001.696.136c.6.021 1.2-.02 1.794-.123.253.5.546.98.872 1.432a19.758 19.758 0 004.003-2.03c.332-3.348-.321-6.75-2.703-10.239zM9.845 14.9c-.785 0-1.43-.72-1.43-1.606 0-.886.636-1.606 1.43-1.606.803 0 1.439.73 1.43 1.606 0 .886-.636 1.606-1.43 1.606zm4.31 0c-.785 0-1.43-.72-1.43-1.606 0-.886.636-1.606 1.43-1.606.803 0 1.439.73 1.43 1.606 0 .886-.627 1.606-1.43 1.606z" />
-              </svg>
-            </a>
-          </div>
-        </div>
-      </footer>
+      </section>
       <div id="image-lightbox" class="image-lightbox hidden" aria-hidden="true">
         <img id="image-lightbox-media" src="" alt="Expanded generated image" />
       </div>
@@ -2001,6 +2204,9 @@ export function renderAppShell(input: {
         adminStats: null,
         compatibility: null,
         authenticated: false,
+        role: 'guest',
+        users: [],
+        userProfile: null,
         interactionLimit: 10,
         interactionAppFilter: '',
         modelCatalog: [],
@@ -2010,21 +2216,91 @@ export function renderAppShell(input: {
         publicSummary: null,
         publicRefreshInFlight: false,
       };
-      const PUBLIC_REFRESH_MS = 5000;
       const PROJECT_QUOTA_REFRESH_MS = 30000;
 
       const root = document.documentElement;
-      const savedTheme = localStorage.getItem('gemrouter-theme') || 'dark';
-      root.setAttribute('data-theme', savedTheme);
 
       const menuToggle = document.getElementById('menu-toggle');
       const topMenu = document.getElementById('top-menu');
-      const themeToggle = document.getElementById('theme-toggle');
-      const menuRefreshButton = document.getElementById('menu-refresh-button');
+      const drawerToggle = document.getElementById('drawer-toggle');
+      const drawerClose = document.getElementById('drawer-close');
+      const drawerScrim = document.getElementById('drawer-scrim');
+      const appDrawer = document.getElementById('app-drawer');
+      const drawerSession = document.getElementById('drawer-session');
+      const drawerGuestNav = document.getElementById('drawer-guest-nav');
+      const drawerUserNav = document.getElementById('drawer-user-nav');
+      const drawerAdminNav = document.getElementById('drawer-admin-nav');
+      const drawerActions = document.getElementById('drawer-actions');
+      const drawerSignin = document.getElementById('drawer-signin');
+      const drawerRefresh = document.getElementById('drawer-refresh');
+      const drawerLogout = document.getElementById('drawer-logout');
+      const landing = document.getElementById('landing');
+      const landingSignin = document.getElementById('landing-signin');
       const menuLogoutButton = document.getElementById('menu-logout-button');
       const authSummary = document.getElementById('auth-summary');
       const authStatus = document.getElementById('auth-status');
       const loginForm = document.getElementById('login-form');
+      const signupToggle = document.getElementById('signup-toggle');
+      const signupForm = document.getElementById('signup-form');
+      const signupStatus = document.getElementById('signup-status');
+
+      let drawerTrigger = null;
+      let drawerCloseTimer = null;
+      function playEntrance(element) {
+        if (!element) return;
+        element.classList.remove('page-enter');
+        void element.offsetWidth;
+        element.classList.add('page-enter');
+        window.setTimeout(function() { element.classList.remove('page-enter'); }, 260);
+      }
+      function setDrawerOpen(open, trigger) {
+        if (open && trigger) drawerTrigger = trigger;
+        if (drawerCloseTimer) {
+          window.clearTimeout(drawerCloseTimer);
+          drawerCloseTimer = null;
+        }
+        if (open) {
+          appDrawer.classList.remove('hidden');
+          drawerScrim.classList.remove('hidden');
+          window.requestAnimationFrame(function() {
+            appDrawer.classList.add('is-open');
+            drawerScrim.classList.add('is-open');
+          });
+        } else {
+          appDrawer.classList.remove('is-open');
+          drawerScrim.classList.remove('is-open');
+          drawerCloseTimer = window.setTimeout(function() {
+            if (!appDrawer.classList.contains('is-open')) {
+              appDrawer.classList.add('hidden');
+              drawerScrim.classList.add('hidden');
+            }
+          }, 230);
+        }
+        appDrawer.setAttribute('aria-hidden', open ? 'false' : 'true');
+        drawerScrim.setAttribute('aria-hidden', open ? 'false' : 'true');
+        drawerToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+        if (open) {
+          const first = appDrawer.querySelector('button:not([disabled])');
+          if (first) first.focus();
+        } else if (drawerTrigger && typeof drawerTrigger.focus === 'function') {
+          drawerTrigger.focus();
+        }
+      }
+
+      if (bootstrap.googleOAuthEnabled) {
+        const googleLoginContainer = document.getElementById('google-login-container');
+        if (googleLoginContainer) {
+          googleLoginContainer.classList.remove('hidden');
+        }
+      }
+
+      const urlParams = new URLSearchParams(window.location.search);
+      const oauthError = urlParams.get('error');
+      if (oauthError) {
+        authStatus.textContent = decodeURIComponent(oauthError);
+        topMenu.classList.remove('hidden');
+        window.history.replaceState({}, document.title, window.location.pathname);
+      }
       const activityLabel = document.getElementById('activity-label');
       const publicRuntimePills = document.getElementById('public-runtime-pills');
       const publicStats = document.getElementById('public-stats');
@@ -2036,13 +2312,16 @@ export function renderAppShell(input: {
       const nvidiaSection = document.getElementById('nvidia-section');
       const nvidiaTable = document.getElementById('nvidia-table');
       const nvidiaMeta = document.getElementById('nvidia-meta');
+      const modelStatsTable = document.getElementById('model-stats-table');
       const hourlyChart = document.getElementById('hourly-chart');
       const routeChart = document.getElementById('route-chart');
       const adminDashboard = document.getElementById('admin-dashboard');
+      const userDashboard = document.getElementById('user-dashboard');
       const adminBannerTitle = document.getElementById('admin-banner-title');
       const adminBannerCopy = document.getElementById('admin-banner-copy');
       const refreshButton = document.getElementById('refresh-button');
       const logoutButton = document.getElementById('logout-button');
+      const usersJumpButton = document.getElementById('users-jump-button');
       const runtimePills = document.getElementById('runtime-pills');
       const backendPills = document.getElementById('backend-pills');
       const backendOutput = document.getElementById('backend-output');
@@ -2050,6 +2329,7 @@ export function renderAppShell(input: {
       const providerPills = document.getElementById('provider-pills');
       const providerOutput = document.getElementById('provider-output');
       const statsGrid = document.getElementById('stats-grid');
+      const userStatsGrid = document.getElementById('user-stats-grid');
       const compatibilityForm = document.getElementById('compatibility-form');
       const compatibilityStatus = document.getElementById('compatibility-status');
       const compatibilityOutput = document.getElementById('compatibility-output');
@@ -2078,6 +2358,20 @@ export function renderAppShell(input: {
       const allowedModelsPicker = document.getElementById('allowed-models-picker');
       const allowedModelsOptions = document.getElementById('allowed-models-options');
       const allowedModelsSummary = document.getElementById('allowed-models-summary');
+      const userForm = document.getElementById('user-form');
+      const userStatus = document.getElementById('user-status');
+      const usersTable = document.getElementById('users-table');
+      const userBannerTitle = document.getElementById('user-banner-title');
+      const userRefreshButton = document.getElementById('user-refresh-button');
+      const userLogoutButton = document.getElementById('user-logout-button');
+      const userApiBaseUrl = document.getElementById('user-api-base-url');
+      const userApiKeyPreview = document.getElementById('user-api-key-preview');
+      const userApiKeyRotate = document.getElementById('user-api-key-rotate');
+      const userApiStatus = document.getElementById('user-api-status');
+      const userModels = document.getElementById('user-models');
+      const userAccountForm = document.getElementById('user-account-form');
+      const userAccountStatus = document.getElementById('user-account-status');
+      const userAccountsTable = document.getElementById('user-accounts-table');
 
       function fmtNumber(value) {
         return new Intl.NumberFormat().format(value || 0);
@@ -2092,26 +2386,35 @@ export function renderAppShell(input: {
           .replace(/'/g, '&#39;');
       }
 
-      function setTheme(theme) {
-        root.setAttribute('data-theme', theme);
-        localStorage.setItem('gemrouter-theme', theme);
-        themeToggle.innerHTML = (theme === 'dark' ? '${svgIcon('sun')}' : '${svgIcon('moon')}');
-        themeToggle.setAttribute('title', theme === 'dark' ? 'Switch to light' : 'Switch to dark');
-        themeToggle.setAttribute('aria-label', theme === 'dark' ? 'Switch to light' : 'Switch to dark');
-      }
-
       menuToggle.addEventListener('click', () => {
         topMenu.classList.toggle('hidden');
       });
+      drawerToggle.addEventListener('click', function() { setDrawerOpen(true, drawerToggle); });
+      drawerClose.addEventListener('click', function() { setDrawerOpen(false); });
+      drawerScrim.addEventListener('click', function() { setDrawerOpen(false); });
+      drawerSignin.addEventListener('click', function(event) {
+        event.stopPropagation();
+        setDrawerOpen(false);
+        topMenu.classList.remove('hidden');
+        menuToggle.focus();
+      });
+      landingSignin.addEventListener('click', function(event) {
+        // The document-level outside-click listener runs after this handler.
+        // Stop it from immediately closing the popover we just opened.
+        event.stopPropagation();
+        topMenu.classList.remove('hidden');
+        menuToggle.focus();
+      });
+      drawerRefresh.addEventListener('click', function() { refreshSession().catch(function(error) { authStatus.textContent = error.message; }); });
+      drawerLogout.addEventListener('click', function() { menuLogoutButton.click(); });
       document.addEventListener('click', (event) => {
         if (!topMenu.contains(event.target) && !menuToggle.contains(event.target)) {
           topMenu.classList.add('hidden');
         }
       });
-      themeToggle.addEventListener('click', () => {
-        setTheme(root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
+      document.addEventListener('keydown', function(event) {
+        if (event.key === 'Escape' && !appDrawer.classList.contains('hidden')) setDrawerOpen(false);
       });
-      setTheme(savedTheme);
 
       function htmlToText(value) {
         return String(value || '')
@@ -2731,6 +3034,90 @@ export function renderAppShell(input: {
 
       function setAdminVisible(enabled) {
         adminDashboard.classList.toggle('hidden', !enabled);
+        if (enabled) {
+          activateWorkspace('admin', pageFromHash('admin') || state.activeAdminWindow || 'admin-overview', true);
+          playEntrance(adminDashboard);
+        }
+      }
+
+      function setUserVisible(enabled) {
+        userDashboard.classList.toggle('hidden', !enabled);
+        if (enabled) {
+          activateWorkspace('user', pageFromHash('user') || state.activeUserWindow || 'user-overview', true);
+          playEntrance(userDashboard);
+        }
+      }
+
+      function pageFromHash(scope) {
+        const target = decodeURIComponent(window.location.hash.replace(/^#\\/?/, ''));
+        const selector = '[data-window-scope="' + scope + '"][data-window="' + target + '"]';
+        return target && document.querySelector(selector) ? target : '';
+      }
+
+      function activateWorkspace(scope, target, preserveHash) {
+        const targetName = String(target || '');
+        const panels = Array.from(document.querySelectorAll('[data-window-scope="' + scope + '"]'));
+        if (!panels.some(function(panel) { return panel.getAttribute('data-window') === targetName; })) return;
+        document.querySelectorAll('[data-window-scope="' + scope + '"]').forEach(function(panel) {
+          panel.classList.toggle('hidden', panel.getAttribute('data-window') !== targetName);
+        });
+        playEntrance(document.querySelector('[data-window-scope="' + scope + '"][data-window="' + targetName + '"]'));
+        document.querySelectorAll('[data-workspace-nav="' + scope + '"]').forEach(function(button) {
+          const active = button.getAttribute('data-window-target') === targetName;
+          button.classList.toggle('is-active', active);
+          button.setAttribute('aria-current', active ? 'page' : 'false');
+        });
+        if (scope === 'admin') state.activeAdminWindow = targetName;
+        if (scope === 'user') state.activeUserWindow = targetName;
+        if (!preserveHash && window.location.hash !== '#/' + targetName) {
+          window.history.pushState({}, '', '#/' + encodeURIComponent(targetName));
+        }
+        if (!preserveHash) {
+          setDrawerOpen(false);
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+      }
+
+      document.querySelectorAll('[data-workspace-nav]').forEach(function(button) {
+        button.addEventListener('click', function() {
+          activateWorkspace(button.getAttribute('data-workspace-nav'), button.getAttribute('data-window-target'));
+        });
+      });
+      window.addEventListener('hashchange', function() {
+        const scope = state.role === 'admin' ? 'admin' : (state.role === 'user' ? 'user' : '');
+        const target = scope ? pageFromHash(scope) : '';
+        if (target) activateWorkspace(scope, target, true);
+      });
+
+      function renderUsers(users) {
+        state.users = Array.isArray(users) ? users : [];
+        usersTable.innerHTML = state.users.map(function(user) {
+          return '<tr><td><strong>' + escapeHtml(user.username) + '</strong></td><td>' + escapeHtml(String(user.apiKeyCount || 0)) + '</td><td>' + escapeHtml(formatTimestamp(user.createdAt)) + '</td><td><button type="button" class="bad" data-user-id="' + escapeHtml(user.id) + '">Delete</button></td></tr>';
+        }).join('') || '<tr><td colspan="4" class="muted">No self-service users yet.</td></tr>';
+      }
+
+      async function loadUsers() {
+        const data = await request('/admin/users');
+        renderUsers(data.users);
+      }
+
+      function renderUserProfile(profile) {
+        state.userProfile = profile;
+        userBannerTitle.textContent = profile.username ? ('Your GemRouter profile: ' + profile.username) : 'Your GemRouter profile';
+        userApiBaseUrl.value = profile.apiBaseUrl || '';
+        userApiKeyPreview.value = profile.apiKeyPreview || '';
+        userModels.textContent = 'Allowed models\\n' + (profile.models || []).join('\\n');
+        renderStats(profile.stats, userStatsGrid);
+        const accounts = Array.isArray(profile.accounts) ? profile.accounts : [];
+        userAccountsTable.innerHTML = accounts.map(function(account) {
+          return '<tr><td><strong>' + escapeHtml(account.id) + '</strong><div class="footer-note mono">' + escapeHtml(account.keyPreview || '') + '</div></td><td>' + escapeHtml(account.projectId || '—') + '</td><td><span class="chip ' + (account.enabled === false ? 'warn' : 'good') + '">' + (account.enabled === false ? 'disabled' : 'enabled') + '</span></td><td><button type="button" class="bad" data-account-id="' + escapeHtml(account.id) + '">Remove</button></td></tr>';
+        }).join('') || '<tr><td colspan="4" class="muted">No Gemini API keys connected yet.</td></tr>';
+      }
+
+      async function loadUserProfile() {
+        const profile = await request('/user/summary');
+        renderUserProfile(profile);
+        setUserVisible(true);
       }
 
       function renderPublicPills(summary) {
@@ -2767,8 +3154,8 @@ export function renderAppShell(input: {
       // Strongest -> weakest. Anything not listed sorts after, alphabetically.
       const MODEL_POWER_ORDER = [
         'gemini-3.5-flash',
-        'gemini-3-flash-preview',
         'gemini-3-flash',
+        'gemini-3-flash-preview',
         'gemini-2.5-pro',
         'gemini-2.5-flash',
         'gemini-2.5-flash-lite',
@@ -3473,17 +3860,44 @@ export function renderAppShell(input: {
         geminiApiQuotaTable.innerHTML = rows.join('') || '<tr><td colspan="6" class="muted">No quota activity recorded yet.</td></tr>';
       }
 
-      function renderStats(summary) {
-        if (!statsGrid) return;
-        const totals = summary.totals;
-        const feedback = summary.feedback;
-        statsGrid.innerHTML = [
-          ['Requests', fmtNumber(totals.requests), totals.succeeded + ' ok / ' + totals.failed + ' failed'],
+      function renderStats(summary, target) {
+        const targetGrid = target || statsGrid;
+        if (!targetGrid) return;
+        const totals = summary && summary.totals ? summary.totals : {};
+        const feedback = summary && summary.feedback ? summary.feedback : {};
+        targetGrid.innerHTML = [
+          ['Requests', fmtNumber(totals.requests), (totals.succeeded || 0) + ' ok / ' + (totals.failed || 0) + ' failed'],
           ['Tokens', fmtNumber(totals.totalTokens), fmtNumber(totals.promptTokens) + ' prompt / ' + fmtNumber(totals.completionTokens) + ' completion'],
           ['Avg latency', fmtNumber(totals.avgLatencyMs) + ' ms', 'Across logged interactions'],
-          ['Feedback', feedback.good + ' good / ' + feedback.bad + ' bad', feedback.unrated + ' unrated'],
+          ['Feedback', (feedback.good || 0) + ' good / ' + (feedback.bad || 0) + ' bad', (feedback.unrated || 0) + ' unrated'],
         ].map(function(entry) {
           return '<div class="card"><div class="label">' + escapeHtml(entry[0]) + '</div><div class="metric">' + escapeHtml(entry[1]) + '</div><div class="metric-sub">' + escapeHtml(entry[2]) + '</div></div>';
+        }).join('');
+      }
+
+      function renderModelStats(summary) {
+        if (!modelStatsTable) return;
+        const rows = (summary && Array.isArray(summary.byModel)) ? summary.byModel : [];
+        if (rows.length === 0) {
+          modelStatsTable.innerHTML = '<tr><td colspan="7" class="muted">No interactions logged yet.</td></tr>';
+          return;
+        }
+        modelStatsTable.innerHTML = rows.map(function(row) {
+          const rate = row.requests > 0 ? (100 * row.succeeded / row.requests) : 0;
+          const rateClass = rate >= 90 ? 'good' : (rate >= 60 ? 'warn' : 'bad');
+          const reasons = (row.failureReasons || [])
+            .slice(0, 3)
+            .map(function(r) { return escapeHtml(r.reason) + ' (' + r.count + ')'; })
+            .join(', ') || '—';
+          return '<tr>' +
+            '<td>' + escapeHtml(row.model) + '</td>' +
+            '<td>' + fmtNumber(row.requests) + '</td>' +
+            '<td>' + fmtNumber(row.succeeded) + '</td>' +
+            '<td>' + fmtNumber(row.failed) + '</td>' +
+            '<td><span class="chip ' + rateClass + '">' + rate.toFixed(1) + '%</span></td>' +
+            '<td>' + fmtNumber(row.avgLatencyMs) + ' ms</td>' +
+            '<td>' + reasons + '</td>' +
+            '</tr>';
         }).join('');
       }
 
@@ -3563,6 +3977,7 @@ export function renderAppShell(input: {
         appForm.elements.id.value = app.id;
         appForm.elements.name.value = app.name;
         appForm.elements.allowedOrigins.value = app.allowedOrigins.join(', ');
+        appForm.elements.geminiApiKeyIds.value = (app.geminiApiKeyIds || []).join(', ');
         appForm.elements.sessionNamespace.value = app.sessionNamespace;
         appForm.elements.rateLimitPerMinute.value = app.rateLimitPerMinute;
         appForm.elements.maxConcurrency.value = app.maxConcurrency;
@@ -3581,9 +3996,12 @@ export function renderAppShell(input: {
           const modelSummary = app.allowedModels.length > 0
             ? (app.allowedModels.length + ' models')
             : 'bootstrap defaults';
+          const accountSummary = app.geminiApiKeyIds && app.geminiApiKeyIds.length > 0
+            ? app.geminiApiKeyIds.join(', ')
+            : 'shared pool';
           return '<tr>' +
             '<td><strong>' + escapeHtml(app.name) + '</strong><div class="footer-note">' + badge + '</div></td>' +
-            '<td>' + escapeHtml(app.allowedOrigins.join(', ') || 'none') + '<div class="footer-note">' + escapeHtml(modelSummary) + ': ' + escapeHtml(app.allowedModels.join(', ') || 'inherit bootstrap') + '</div></td>' +
+            '<td>' + escapeHtml(app.allowedOrigins.join(', ') || 'none') + '<div class="footer-note">' + escapeHtml(modelSummary) + ': ' + escapeHtml(app.allowedModels.join(', ') || 'inherit bootstrap') + '</div><div class="footer-note">Gemini: ' + escapeHtml(accountSummary) + '</div></td>' +
             '<td><div>rpm: ' + escapeHtml(String(app.rateLimitPerMinute)) + '</div><div>conc: ' + escapeHtml(String(app.maxConcurrency)) + '</div><div class="footer-note mono">' + escapeHtml(app.keyPreview) + '</div></td>' +
             '<td><div class="button-row">' +
               '<button type="button" class="secondary" data-action="edit" data-id="' + escapeHtml(app.id) + '">Edit</button>' +
@@ -3767,7 +4185,7 @@ export function renderAppShell(input: {
           const data = await request('/admin/summary');
           state.adminSummary = data;
           state.apps = data.apps;
-          state.adminStats = data.stats || null;
+          state.adminStats = data.myStats || null;
           state.modelCatalog = Array.isArray(data.modelCatalog) ? data.modelCatalog : [];
           state.compatibility = data.compatibility || null;
           state.freeTierPolicy = data.freeTierPolicy || null;
@@ -3782,12 +4200,14 @@ export function renderAppShell(input: {
           renderRuntimePills(data);
           renderBackendDiagnostics(data);
           renderProviderState(data);
-          renderStats(data.stats);
+          renderStats(data.myStats || data.stats);
+          renderModelStats(data.myStats || data.stats);
           loadAccounts();
           loadProxyConfig();
           loadModelsConfig();
           renderCompatibility(data.compatibility);
           renderApps(data.apps);
+          void loadUsers();
           fillInteractionAppFilter();
           renderInteractions(state.adminStats);
           if (editingAppId && !state.appFormDirty) {
@@ -3839,24 +4259,44 @@ export function renderAppShell(input: {
       async function refreshSession() {
         const me = await request('/auth/me');
         state.authenticated = me.authenticated === true;
+        state.role = me.role || 'guest';
         state.username = me.username || '';
         if (state.authenticated) {
-          authSummary.textContent = state.username ? 'Admin session active for ' + state.username + '.' : 'Admin session active.';
+          landing.classList.add('hidden');
+          drawerGuestNav.classList.add('hidden');
+          drawerUserNav.classList.toggle('hidden', state.role !== 'user');
+          drawerAdminNav.classList.toggle('hidden', state.role !== 'admin');
+          drawerActions.classList.remove('hidden');
+          drawerSession.textContent = state.username ? state.username : 'Signed in';
+          authSummary.textContent = state.username ? (state.role === 'admin' ? 'Admin session active for ' : 'User session active for ') + state.username + '.' : 'Session active.';
           authStatus.textContent = '';
-          await loadAdminSummary();
-          await loadProjectQuota(false);
+          if (state.role === 'admin') {
+            setUserVisible(false);
+            await loadAdminSummary();
+            await loadProjectQuota(false);
+          } else {
+            setAdminVisible(false);
+            await loadUserProfile();
+          }
         } else {
           state.adminSummary = null;
           state.projectQuota = null;
+          landing.classList.remove('hidden');
+          drawerGuestNav.classList.remove('hidden');
+          drawerUserNav.classList.add('hidden');
+          drawerAdminNav.classList.add('hidden');
+          drawerActions.classList.add('hidden');
+          drawerSession.textContent = 'Sign in to open your workspace.';
           setAdminVisible(false);
-          authSummary.textContent = 'Guest view is active. Sign in to manage apps, keys, routes and diagnostics.';
+          setUserVisible(false);
+          authSummary.textContent = 'Guest view is active. Sign in to manage your account and Gemini keys.';
           authStatus.textContent = '';
         }
       }
 
       loginForm.addEventListener('submit', async function(event) {
         event.preventDefault();
-        authStatus.textContent = 'Opening admin session…';
+        authStatus.textContent = 'Signing in…';
         const form = new FormData(loginForm);
         try {
           await request('/auth/login', {
@@ -3873,26 +4313,49 @@ export function renderAppShell(input: {
         }
       });
 
+      signupToggle.addEventListener('click', function() {
+        const opening = signupForm.classList.contains('hidden');
+        signupForm.classList.toggle('hidden', !opening);
+        signupToggle.textContent = opening ? 'I already have an account' : 'Create an account';
+        if (opening) signupForm.elements.username.focus();
+      });
+      signupForm.addEventListener('submit', async function(event) {
+        event.preventDefault();
+        const form = new FormData(signupForm);
+        const password = String(form.get('password') || '');
+        const confirmation = String(form.get('confirmPassword') || '');
+        if (password !== confirmation) {
+          signupStatus.textContent = 'Passwords do not match.';
+          return;
+        }
+        signupStatus.textContent = 'Creating account…';
+        try {
+          const response = await request('/auth/signup', {
+            method: 'POST',
+            body: JSON.stringify({ username: form.get('username'), password: password }),
+          });
+          signupForm.reset();
+          signupForm.classList.add('hidden');
+          signupToggle.textContent = 'Create an account';
+          topMenu.classList.add('hidden');
+          await refreshSession();
+          openAppKeyModal('Your personal API key', response.apiKey);
+        } catch (error) {
+          signupStatus.textContent = error.message;
+        }
+      });
+
       refreshButton.addEventListener('click', async function() {
         try {
-          await loadPublicSummary();
           await refreshSession();
         } catch (error) {
           authStatus.textContent = error.message;
         }
       });
-
-      menuRefreshButton.addEventListener('click', async function() {
-        // Spin for at least half a second, then settle back to the icon.
-        menuRefreshButton.classList.add('is-loading');
-        const minSpin = new Promise(function(resolve) { setTimeout(resolve, 500); });
-        try {
-          await Promise.all([loadPublicSummary().then(refreshSession), minSpin]);
-        } catch (error) {
-          authStatus.textContent = error.message;
-        } finally {
-          menuRefreshButton.classList.remove('is-loading');
-        }
+      usersJumpButton.addEventListener('click', function() {
+        activateWorkspace('admin', 'admin-users');
+        const section = document.getElementById('users-section');
+        if (section) section.scrollIntoView({ behavior: 'smooth', block: 'start' });
       });
 
       async function logoutAdminSession() {
@@ -3900,11 +4363,24 @@ export function renderAppShell(input: {
           await request('/auth/logout', { method: 'POST', body: JSON.stringify({}) });
         } finally {
           state.authenticated = false;
+          state.role = 'guest';
           state.username = '';
           state.adminSummary = null;
           state.projectQuota = null;
+          landing.classList.remove('hidden');
+          playEntrance(landing);
           setAdminVisible(false);
-          authSummary.textContent = 'Guest view is active. Sign in to manage apps, keys, routes and diagnostics.';
+          setUserVisible(false);
+          drawerGuestNav.classList.remove('hidden');
+          drawerUserNav.classList.add('hidden');
+          drawerAdminNav.classList.add('hidden');
+          drawerActions.classList.add('hidden');
+          drawerSession.textContent = 'Sign in to open your workspace.';
+          topMenu.classList.add('hidden');
+          setDrawerOpen(false);
+          window.history.replaceState({}, '', window.location.pathname + window.location.search);
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+          authSummary.textContent = 'Guest view is active. Sign in to manage your account and Gemini keys.';
           authStatus.textContent = '';
         }
       }
@@ -4125,6 +4601,74 @@ export function renderAppShell(input: {
         }
       });
 
+      userForm.addEventListener('submit', async function(event) {
+        event.preventDefault();
+        userStatus.textContent = 'Creating user…';
+        const form = new FormData(userForm);
+        try {
+          const response = await request('/admin/users', {
+            method: 'POST',
+            body: JSON.stringify({ username: form.get('username'), password: form.get('password') }),
+          });
+          userForm.reset();
+          userStatus.textContent = 'User created. Their personal API key is shown in the popup.';
+          openAppKeyModal('Personal API key for ' + String(response.user && response.user.username || 'user'), response.apiKey);
+          await loadUsers();
+        } catch (error) {
+          userStatus.textContent = error.message;
+        }
+      });
+
+      usersTable.addEventListener('click', async function(event) {
+        const target = event.target.closest('button[data-user-id]');
+        if (!target) return;
+        const userId = target.dataset.userId;
+        if (!userId || !window.confirm('Delete this user and all of their Gemini API keys?')) return;
+        try {
+          await request('/admin/users/' + encodeURIComponent(userId), { method: 'DELETE', body: JSON.stringify({}) });
+          userStatus.textContent = 'User deleted.';
+          await loadUsers();
+        } catch (error) {
+          userStatus.textContent = error.message;
+        }
+      });
+
+      userRefreshButton.addEventListener('click', async function() {
+        try { await loadUserProfile(); } catch (error) { userApiStatus.textContent = error.message; }
+      });
+      userLogoutButton.addEventListener('click', logoutAdminSession);
+      userApiKeyRotate.addEventListener('click', async function() {
+        if (!window.confirm('Rotate your personal API key? Existing clients will stop working.')) return;
+        try {
+          const response = await request('/user/api-key/rotate', { method: 'POST', body: JSON.stringify({}) });
+          userApiStatus.textContent = 'Key rotated. Save the new key now.';
+          openAppKeyModal('Your new personal API key', response.apiKey);
+          await loadUserProfile();
+        } catch (error) { userApiStatus.textContent = error.message; }
+      });
+      userAccountForm.addEventListener('submit', async function(event) {
+        event.preventDefault();
+        userAccountStatus.textContent = 'Adding Gemini API key…';
+        const form = new FormData(userAccountForm);
+        try {
+          await request('/user/gemini-accounts', { method: 'POST', body: JSON.stringify({ key: form.get('key'), projectId: form.get('projectId') }) });
+          userAccountForm.reset();
+          userAccountStatus.textContent = 'Gemini API key added to your isolated pool.';
+          await loadUserProfile();
+        } catch (error) { userAccountStatus.textContent = error.message; }
+      });
+      userAccountsTable.addEventListener('click', async function(event) {
+        const target = event.target.closest('button[data-account-id]');
+        if (!target) return;
+        const accountId = target.dataset.accountId;
+        if (!accountId || !window.confirm('Remove this Gemini API key from your pool?')) return;
+        try {
+          await request('/user/gemini-accounts/' + encodeURIComponent(accountId), { method: 'DELETE', body: JSON.stringify({}) });
+          userAccountStatus.textContent = 'Gemini API key removed.';
+          await loadUserProfile();
+        } catch (error) { userAccountStatus.textContent = error.message; }
+      });
+
       appForm.addEventListener('submit', async function(event) {
         event.preventDefault();
         const form = new FormData(appForm);
@@ -4134,6 +4678,7 @@ export function renderAppShell(input: {
           name: form.get('name'),
           allowedOrigins: String(form.get('allowedOrigins') || '').split(',').map(function(item) { return item.trim(); }).filter(Boolean),
           allowedModels: getAllowedModelSelection(),
+          geminiApiKeyIds: String(form.get('geminiApiKeyIds') || '').split(',').map(function(item) { return item.trim(); }).filter(Boolean),
           sessionNamespace: form.get('sessionNamespace'),
           rateLimitPerMinute: Number(form.get('rateLimitPerMinute') || 0),
           maxConcurrency: Number(form.get('maxConcurrency') || 0),
@@ -4241,21 +4786,17 @@ export function renderAppShell(input: {
       });
 
       Promise.resolve()
-        .then(loadPublicSummary)
         .then(refreshSession)
         .catch(function(error) {
           authStatus.textContent = error.message;
         });
 
       window.setInterval(function() {
-        if (document.hidden) return;
-        Promise.all([
-          loadPublicSummary(),
-          refreshSession(),
-        ]).catch(function(error) {
+        if (document.hidden || !state.authenticated) return;
+        refreshSession().catch(function(error) {
           authStatus.textContent = error.message;
         });
-      }, PUBLIC_REFRESH_MS);
+      }, 30000);
     </script>
   </body>
 </html>`;

@@ -15,6 +15,7 @@ export interface ChatCompletionsRequest {
   response_format?: Record<string, unknown>;
   n?: number;
   tools?: unknown[];
+  tool_choice?: unknown;
 }
 
 export interface ResponsesRequest {
@@ -154,7 +155,7 @@ function extractImages(content: unknown): string[] {
 function normalizeRole(rawRole: unknown): LLMMessage['role'] {
   const role = String(rawRole ?? '').trim().toLowerCase();
   if (role === 'developer') return 'system';
-  if (role === 'system' || role === 'user' || role === 'assistant') return role;
+  if (role === 'system' || role === 'user' || role === 'assistant' || role === 'tool') return role;
   throw new Error(`Unsupported message role: ${role || 'unknown'}`);
 }
 
@@ -203,6 +204,8 @@ export function parseChatCompletionsRequest(body: ChatCompletionsRequest): {
   jsonSchema?: unknown;
   jsonPresentation: 'bare' | 'markdown_block';
   actionPolicy: SemanticActionPolicy;
+  tools?: any[];
+  toolChoice?: any;
 } {
   if (!Array.isArray(body.messages) || body.messages.length === 0) {
     throw new Error('messages must be a non-empty array');
@@ -210,18 +213,29 @@ export function parseChatCompletionsRequest(body: ChatCompletionsRequest): {
   if (body.n !== undefined && body.n !== 1) {
     throw new Error('Only n=1 is supported');
   }
-  if (Array.isArray(body.tools) && body.tools.length > 0) {
-    throw new Error('Tool calling is not supported on this router surface');
-  }
+  const tools = Array.isArray(body.tools) ? body.tools : undefined;
+  const toolChoice = body.tool_choice;
 
   const messages = body.messages.map((message) => {
     if (!message || typeof message !== 'object') throw new Error('Invalid message item');
     const typed = message as Record<string, unknown>;
     const images = extractImages(typed.content);
+    const reasoningDetails = Array.isArray(typed.reasoning_details) ? typed.reasoning_details : [];
+    const toolCalls = Array.isArray(typed.tool_calls) ? typed.tool_calls.map((tc: any) => {
+      const detail = reasoningDetails.find((d: any) => d && d.id === tc.id);
+      return {
+        ...tc,
+        ...(detail && typeof detail.data === 'string' ? { thought_signature: detail.data } : {}),
+      };
+    }) : undefined;
+
     return {
       role: normalizeRole(typed.role),
       content: parseTextContent(typed.content, String(typed.role ?? 'unknown')),
       ...(images.length > 0 ? { images } : {}),
+      ...(toolCalls ? { tool_calls: toolCalls } : {}),
+      ...(typed.tool_call_id ? { tool_call_id: typed.tool_call_id as string } : {}),
+      ...(typed.name ? { name: typed.name as string } : {}),
     } satisfies LLMMessage;
   });
 
@@ -248,6 +262,8 @@ export function parseChatCompletionsRequest(body: ChatCompletionsRequest): {
     jsonPresentation:
       responseFormatType.startsWith('json') ? 'bare' : prefersJsonMarkdownBlock(messages) ? 'markdown_block' : 'bare',
     actionPolicy: detectJsonActionPolicy(messages),
+    tools,
+    toolChoice,
   };
 }
 
@@ -263,9 +279,7 @@ export function parseResponsesRequest(body: ResponsesRequest): {
   jsonPresentation: 'bare' | 'markdown_block';
   actionPolicy: SemanticActionPolicy;
 } {
-  if (Array.isArray(body.tools) && body.tools.length > 0) {
-    throw new Error('Tool calling is not supported on this router surface');
-  }
+  // Allowed
 
   const messages: LLMMessage[] = [];
   if (body.instructions?.trim()) {
@@ -397,7 +411,8 @@ export function buildChatCompletionResponse(input: {
   model: string;
   text: string;
   usage: UsageSummary;
-  finishReason?: 'stop' | 'length' | 'content_filter';
+  finishReason?: 'stop' | 'length' | 'content_filter' | 'tool_calls';
+  toolCalls?: any[];
   created?: number;
 }): Record<string, unknown> {
   return {
@@ -410,9 +425,17 @@ export function buildChatCompletionResponse(input: {
         index: 0,
         message: {
           role: 'assistant',
-          content: input.text,
+          content: input.text || null,
+          ...(input.toolCalls && input.toolCalls.length > 0 ? { tool_calls: input.toolCalls } : {}),
+          ...(input.toolCalls && input.toolCalls.some(tc => tc.thought_signature) ? {
+            reasoning_details: input.toolCalls.filter(tc => tc.thought_signature).map(tc => ({
+              type: 'reasoning.encrypted',
+              id: tc.id,
+              data: tc.thought_signature,
+            })),
+          } : {}),
         },
-        finish_reason: input.finishReason ?? 'stop',
+        finish_reason: input.toolCalls && input.toolCalls.length > 0 ? 'tool_calls' : (input.finishReason ?? 'stop'),
       },
     ],
     usage: input.usage,

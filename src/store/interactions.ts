@@ -33,7 +33,7 @@ export interface InteractionRecord {
   origin?: string;
   provider?: string;
   fallbackReason?: string;
-  finishReason?: 'stop' | 'length' | 'content_filter';
+  finishReason?: 'stop' | 'length' | 'content_filter' | 'tool_calls';
   policyFallbackReason?: string;
   fallbackAttempts?: Array<{
     model: string;
@@ -252,7 +252,7 @@ export class InteractionStore {
     };
   }
 
-  summary(limit = 50): {
+  summary(limit = 50, options?: { appIds?: string[] }): {
     totals: {
       requests: number;
       succeeded: number;
@@ -275,6 +275,14 @@ export class InteractionStore {
       failed: number;
       totalTokens: number;
     }>;
+    byModel: Array<{
+      model: string;
+      requests: number;
+      succeeded: number;
+      failed: number;
+      avgLatencyMs: number;
+      failureReasons: Array<{ reason: string; count: number }>;
+    }>;
     recent: InteractionRecord[];
   } {
     const totals = {
@@ -292,10 +300,21 @@ export class InteractionStore {
       unrated: 0,
     };
     const byApp = new Map<string, { appId: string; appName: string; requests: number; succeeded: number; failed: number; totalTokens: number }>();
+    const byModel = new Map<string, {
+      model: string;
+      requests: number;
+      succeeded: number;
+      failed: number;
+      latencySamples: number;
+      latencyTotal: number;
+      failureReasons: Map<string, number>;
+    }>();
     let latencySamples = 0;
     let latencyTotal = 0;
 
+    const appIds = options?.appIds && options.appIds.length > 0 ? new Set(options.appIds) : null;
     for (const record of this.state.interactions) {
+      if (appIds && !appIds.has(record.appId)) continue;
       totals.requests += 1;
       if (record.status === 'succeeded') totals.succeeded += 1;
       if (record.status === 'failed') totals.failed += 1;
@@ -325,6 +344,31 @@ export class InteractionStore {
       if (record.status === 'failed') current.failed += 1;
       current.totalTokens += record.usage?.total_tokens ?? 0;
       byApp.set(record.appId, current);
+
+      const modelKey = record.requestedModel || record.model || 'unknown';
+      const modelCurrent =
+        byModel.get(modelKey) ??
+        {
+          model: modelKey,
+          requests: 0,
+          succeeded: 0,
+          failed: 0,
+          latencySamples: 0,
+          latencyTotal: 0,
+          failureReasons: new Map<string, number>(),
+        };
+      modelCurrent.requests += 1;
+      if (record.status === 'succeeded') modelCurrent.succeeded += 1;
+      if (record.status === 'failed') {
+        modelCurrent.failed += 1;
+        const reason = record.fallbackReason || `http_${record.statusCode}`;
+        modelCurrent.failureReasons.set(reason, (modelCurrent.failureReasons.get(reason) ?? 0) + 1);
+      }
+      if (typeof record.latencyMs === 'number' && Number.isFinite(record.latencyMs)) {
+        modelCurrent.latencySamples += 1;
+        modelCurrent.latencyTotal += record.latencyMs;
+      }
+      byModel.set(modelKey, modelCurrent);
     }
 
     totals.avgLatencyMs = latencySamples > 0 ? Math.round(latencyTotal / latencySamples) : 0;
@@ -333,8 +377,26 @@ export class InteractionStore {
       totals,
       feedback,
       byApp: [...byApp.values()].sort((left, right) => right.requests - left.requests),
-      recent: this.list(limit),
+      byModel: [...byModel.values()]
+        .map((entry) => ({
+          model: entry.model,
+          requests: entry.requests,
+          succeeded: entry.succeeded,
+          failed: entry.failed,
+          avgLatencyMs: entry.latencySamples > 0 ? Math.round(entry.latencyTotal / entry.latencySamples) : 0,
+          failureReasons: [...entry.failureReasons.entries()]
+            .map(([reason, count]) => ({ reason, count }))
+            .sort((left, right) => right.count - left.count),
+        }))
+        .sort((left, right) => right.requests - left.requests),
+      recent: this.state.interactions
+        .filter((record) => !appIds || appIds.has(record.appId))
+        .slice(0, Math.max(1, limit)),
     };
+  }
+
+  summaryForApps(appIds: string[], limit = 50) {
+    return this.summary(limit, { appIds });
   }
 
   private load(): void {

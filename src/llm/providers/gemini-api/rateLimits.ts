@@ -38,10 +38,26 @@ export const GEMINI_API_TIER1_LIMITS = {
     tpm: 250_000,
     rpd: 20,
   },
+  // Google's pricing/model docs confirm free-tier access for gemini-3.6-flash and
+  // gemini-3.5-flash-lite (added 2026-07-22) but don't publish exact RPM/TPM/RPD anywhere
+  // outside the authenticated AI Studio rate-limit dashboard. Values below are inferred by
+  // mirroring the sibling model in the same tier (3.6-flash ~= other flagship "flash"
+  // models; 3.5-flash-lite ~= other "-lite" models) — re-check against AI Studio and adjust
+  // if the scoreboard shows persistent quota errors that don't match these numbers.
+  'gemini-3.6-flash': {
+    rpm: 5,
+    tpm: 250_000,
+    rpd: 20,
+  },
   'gemini-3-flash-preview': {
     rpm: 5,
     tpm: 250_000,
     rpd: 20,
+  },
+  'gemini-3.5-flash-lite': {
+    rpm: 15,
+    tpm: 250_000,
+    rpd: 500,
   },
   'gemini-3.1-flash-lite': {
     rpm: 15,

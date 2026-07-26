@@ -12,6 +12,26 @@ GEMROUTER_GEMINI_API_KEYS_JSON=[{"id":"k1","key":"AIza...","quotaGroup":"proj-a"
 
 For richer per-account metadata (tiers, limit overrides) use `data/gemini-api-accounts.json`. The file matches keys by `id` to accounts by `id`. See `docs/gemini-api-accounts.example.json`.
 
+## Per-app account isolation
+
+Client apps can be restricted to a subset of configured Gemini account IDs. In **Apps and API Keys**,
+enter the account IDs in the app's **Gemini account IDs** field (comma-separated). The router validates
+the IDs when saving the app. Once assigned, every Gemini attempt for that app—including same-model
+retries, local backpressure waits, and model fallback—uses only that subset. An empty field preserves
+the legacy shared key pool.
+
+This setting is server-side: clients still use the normal OpenAI-compatible base URL and their own
+client API key. Do not give a client admin access; the app key is the intended tenant boundary.
+
+## Self-service users
+
+The administrator can create a user from **Admin → Users** with a username and password. Each user
+can then sign in at `/admin`, add or remove only their own Gemini API keys, and rotate their own
+OpenAI-compatible client key. A user-owned client key is dynamically restricted to Gemini accounts
+owned by that user, so an empty personal pool fails closed rather than using an administrator or
+another user's account. The administrator can see each username and its connected-key count, and
+deleting a user revokes their client key and removes their owned Gemini keys.
+
 ## Quota tracking
 
 GemRouter tracks quota entirely in-process in `data/gemini-api-quota-ledger.json` - no Google Cloud calls, no `gcloud` CLI, no service account required. Tracked per quota group + model:

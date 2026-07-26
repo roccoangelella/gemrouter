@@ -18,9 +18,16 @@ import type {
 
 const PROBE_PROMPT = 'Reply with the single word: ok';
 
+interface ToolCall {
+  id: string;
+  type: 'function';
+  function: { name: string; arguments: string };
+}
+
 interface AttemptResult {
   content: string;
-  finishReason: 'stop' | 'length' | 'content_filter';
+  finishReason: 'stop' | 'length' | 'content_filter' | 'tool_calls';
+  toolCalls?: ToolCall[];
   ttfbMs: number | null;
   latencyMs: number;
   usage: { promptTokens?: number; completionTokens?: number; totalTokens?: number };
@@ -63,19 +70,24 @@ function sniffImageMime(base64: string): string {
 
 function toOpenAiMessages(messages: LLMMessage[]): Array<Record<string, unknown>> {
   return messages.map((message) => {
-    if (Array.isArray(message.images) && message.images.length > 0) {
-      return {
-        role: message.role,
-        content: [
+    const hasToolCalls = Array.isArray(message.tool_calls) && message.tool_calls.length > 0;
+    const out: Record<string, unknown> = {
+      role: message.role,
+      content: Array.isArray(message.images) && message.images.length > 0
+        ? [
           { type: 'text', text: message.content },
           ...message.images.map((image) => ({
             type: 'image_url',
             image_url: { url: `data:${sniffImageMime(image)};base64,${image}` },
           })),
-        ],
-      };
-    }
-    return { role: message.role, content: message.content };
+        ]
+        // A pure tool-call turn conventionally carries null content, not "".
+        : (message.content || (hasToolCalls ? null : '')),
+    };
+    if (hasToolCalls) out.tool_calls = message.tool_calls;
+    if (message.tool_call_id) out.tool_call_id = message.tool_call_id;
+    if (message.name) out.name = message.name;
+    return out;
   });
 }
 
@@ -258,6 +270,10 @@ export function createNvidiaClient(config: NvidiaProviderConfig): LLMClient {
       };
       if (typeof opts?.maxTokens === 'number' && opts.maxTokens > 0) body.max_tokens = opts.maxTokens;
       if (typeof opts?.temperature === 'number') body.temperature = opts.temperature;
+      if (Array.isArray(opts?.tools) && opts.tools.length > 0) {
+        body.tools = opts.tools;
+        if (opts?.toolChoice !== undefined) body.tool_choice = opts.toolChoice;
+      }
 
       let response: Response;
       try {
@@ -319,6 +335,10 @@ export function createNvidiaClient(config: NvidiaProviderConfig): LLMClient {
       let ttfbMs: number | null = null;
       let finishReason: AttemptResult['finishReason'] = 'stop';
       let usage: AttemptResult['usage'] = {};
+      // Streamed tool_calls arrive as sparse-by-index deltas: id/name typically land in
+      // the first delta for that index, `arguments` trickles in as partial JSON text that
+      // must be concatenated (same convention OpenAI's own streaming API uses).
+      const toolCallSlots: Array<{ id?: string; type?: string; name: string; arguments: string } | undefined> = [];
 
       const consumeLine = (rawLine: string): void => {
         const line = rawLine.trim();
@@ -339,7 +359,8 @@ export function createNvidiaClient(config: NvidiaProviderConfig): LLMClient {
           const reasoningPiece = includeThoughts && typeof delta.reasoning_content === 'string'
             ? delta.reasoning_content
             : '';
-          if (piece || reasoningPiece) {
+          const deltaToolCalls = Array.isArray(delta.tool_calls) ? delta.tool_calls as Array<Record<string, unknown>> : [];
+          if (piece || reasoningPiece || deltaToolCalls.length > 0) {
             if (ttfbMs === null) {
               ttfbMs = Date.now() - started;
               clearFirstTokenTimer();
@@ -347,9 +368,22 @@ export function createNvidiaClient(config: NvidiaProviderConfig): LLMClient {
             }
             content += reasoningPiece + piece;
           }
+          for (const tc of deltaToolCalls) {
+            const index = typeof tc.index === 'number' ? tc.index : 0;
+            const slot = toolCallSlots[index] ?? { name: '', arguments: '' };
+            if (typeof tc.id === 'string' && tc.id) slot.id = tc.id;
+            if (typeof tc.type === 'string' && tc.type) slot.type = tc.type;
+            const fn = tc.function as Record<string, unknown> | undefined;
+            if (fn) {
+              if (typeof fn.name === 'string') slot.name += fn.name;
+              if (typeof fn.arguments === 'string') slot.arguments += fn.arguments;
+            }
+            toolCallSlots[index] = slot;
+          }
           const finish = typeof choice.finish_reason === 'string' ? choice.finish_reason : null;
           if (finish === 'length') finishReason = 'length';
           else if (finish === 'content_filter') finishReason = 'content_filter';
+          else if (finish === 'tool_calls') finishReason = 'tool_calls';
         }
         const usageChunk = chunk.usage as Record<string, unknown> | undefined;
         if (usageChunk && typeof usageChunk === 'object') {
@@ -386,14 +420,26 @@ export function createNvidiaClient(config: NvidiaProviderConfig): LLMClient {
       }
 
       const cleaned = includeThoughts ? content.trim() : stripReasoning(content);
-      if (!cleaned) {
+      const toolCalls: ToolCall[] = toolCallSlots
+        .map((slot, index) => (slot ? { id: slot.id ?? `call_${index}`, type: 'function' as const, function: { name: slot.name, arguments: slot.arguments } } : null))
+        .filter((tc): tc is ToolCall => tc !== null);
+      // A tool-call-only turn legitimately has no text content — only treat truly empty
+      // output (no text, no tool calls) as a failed attempt.
+      if (!cleaned && toolCalls.length === 0) {
         throw new NvidiaProviderError('nvidia_empty_response', `NVIDIA ${model} returned no usable content.`, {
           statusCode: 502,
           fallbackEligible: true,
           upstreamModel: model,
         });
       }
-      return { content: cleaned, finishReason, ttfbMs, latencyMs: Date.now() - started, usage };
+      return {
+        content: cleaned,
+        finishReason: toolCalls.length > 0 ? 'tool_calls' : finishReason,
+        toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+        ttfbMs,
+        latencyMs: Date.now() - started,
+        usage,
+      };
     } finally {
       clearTimeout(overallTimer);
       clearFirstTokenTimer();
@@ -494,6 +540,7 @@ export function createNvidiaClient(config: NvidiaProviderConfig): LLMClient {
             finish(() => resolve({
               content: result.content,
               finishReason: result.finishReason,
+              toolCalls: result.toolCalls,
               provider: 'nvidia',
               model: requested,
               backend: 'nvidia',

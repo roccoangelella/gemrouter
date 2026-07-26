@@ -1,10 +1,13 @@
 import type { SemanticProfile } from '../lib/semantics.js';
 
 export interface LLMMessage {
-  role: 'system' | 'user' | 'assistant';
+  role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
   /** Base64-encoded image data (no data: prefix) for vision-capable models. */
   images?: string[];
+  tool_calls?: any[];
+  tool_call_id?: string;
+  name?: string;
 }
 
 export type LLMBackendId = 'gemini-api' | 'ollama' | 'nvidia';
@@ -28,6 +31,10 @@ export interface LLMFallbackAttempt {
 export interface LLMOptions {
   model?: string;
   allowedModelIds?: string[];
+  /** Restrict Gemini API routing to these configured account IDs. Undefined keeps the shared pool. */
+  geminiApiKeyIds?: string[];
+  /** Restrict Gemini API routing to keys owned by this router user. */
+  geminiApiOwnerUserId?: string;
   tier?: ModelTier;
   maxTokens?: number;
   temperature?: number;
@@ -50,12 +57,15 @@ export interface LLMOptions {
   signal?: AbortSignal;
   /** Absolute epoch-ms deadline for the whole request; backends clamp their timeouts to it. */
   deadline?: number;
+  tools?: any[];
+  toolChoice?: any;
 }
 
 export interface LLMResponse {
   content: string;
   /** OpenAI-compatible completion reason, normalized from the upstream provider. */
-  finishReason?: 'stop' | 'length' | 'content_filter';
+  finishReason?: 'stop' | 'length' | 'content_filter' | 'tool_calls';
+  toolCalls?: any[];
   images?: Array<{
     mimeType: string;
     data: string;

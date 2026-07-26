@@ -15,6 +15,39 @@ import { GeminiApiQuotaLedger } from './quotaLedger.js';
 import type { GeminiApiKeyConfig, GeminiApiModelInfo, GeminiApiProviderConfig, GeminiApiUpstreamErrorSnapshot } from './types.js';
 import type { LLMClient, LLMMessage, LLMOptions, LLMResponse, LLMStreamChunk } from '../../types.js';
 
+// Gemini requires each functionCall part in replayed history to carry the exact
+// thoughtSignature the model emitted for it ("Function call is missing a
+// thought_signature..." 400s otherwise) — but thought_signature/thoughtSignature
+// is a non-standard extra key on an OpenAI-shaped tool_call, and most
+// OpenAI-compatible clients (including pi) only round-trip the standard
+// {id, type, function} shape, silently dropping it. The tool_call `id` itself
+// IS a standard field every compliant client preserves, so cache signature by
+// that id server-side instead of depending on the client to echo it back.
+const TOOL_CALL_THOUGHT_SIGNATURE_TTL_MS = 60 * 60 * 1000;
+const toolCallThoughtSignatures = new Map<string, { signature: string; expiresAt: number }>();
+
+function rememberToolCallThoughtSignature(id: string, signature: string | undefined): void {
+  if (!signature) return;
+  const now = Date.now();
+  if (toolCallThoughtSignatures.size > 2000) {
+    for (const [key, entry] of toolCallThoughtSignatures) {
+      if (entry.expiresAt <= now) toolCallThoughtSignatures.delete(key);
+    }
+  }
+  toolCallThoughtSignatures.set(id, { signature, expiresAt: now + TOOL_CALL_THOUGHT_SIGNATURE_TTL_MS });
+}
+
+function recallToolCallThoughtSignature(id: string | undefined): string | undefined {
+  if (!id) return undefined;
+  const entry = toolCallThoughtSignatures.get(id);
+  if (!entry) return undefined;
+  if (entry.expiresAt <= Date.now()) {
+    toolCallThoughtSignatures.delete(id);
+    return undefined;
+  }
+  return entry.signature;
+}
+
 interface GeminiGenerateResponse {
   candidates?: Array<{
     content?: {
@@ -29,6 +62,15 @@ interface GeminiGenerateResponse {
           data?: string;
         };
         thought?: boolean;
+        functionCall?: {
+          name: string;
+          args: any;
+        };
+        functionResponse?: {
+          name: string;
+          response: any;
+        };
+        thoughtSignature?: string;
       }>;
     };
     finishReason?: string;
@@ -91,7 +133,7 @@ function estimateReservationTokens(messages: LLMMessage[], _opts?: LLMOptions): 
 }
 
 function normalizeGeminiApiModel(model: string | undefined): string {
-  const normalized = String(model ?? 'gemini-3.5-flash').trim().toLowerCase();
+  const normalized = String(model ?? 'gemini-3.6-flash').trim().toLowerCase();
   return normalized.replace(/^models\//, '');
 }
 
@@ -123,15 +165,17 @@ class HedgedRequestCancelled extends Error {
 
 function buildThinkingConfig(modelId: string | undefined, opts?: LLMOptions): Record<string, unknown> | null {
   const model = normalizeGeminiApiModel(modelId);
-  // Gemma 4 and Gemini 3.5 reject any thinkingConfig, including an otherwise harmless
-  // `includeThoughts: false`. Omit the field entirely for those models.
-  if (!model.startsWith('gemini-') || /^gemma-/i.test(model) || /^gemini-3\.5-flash/i.test(model)) {
+  // Gemma 4 and Gemini 3.5 Flash (exact match only — NOT 3.5-flash-lite, which is a
+  // different model and untested for this quirk) reject any thinkingConfig, including an
+  // otherwise harmless `includeThoughts: false`. Omit the field entirely for those models.
+  if (!model.startsWith('gemini-') || /^gemma-/i.test(model) || /^gemini-3\.5-flash$/i.test(model)) {
     return null;
   }
   const includeThoughts = opts?.thinking?.includeThoughts === true;
   // gemini-3.5-flash rejects thinkingLevel ("Thinking level is not supported for this model"),
-  // so only the gemini-3 reasoning variants (pro / flash-preview / 3.1) get a thinkingLevel.
-  if (/^gemini-3/i.test(model) && !/^gemini-3\.5-flash/i.test(model)) {
+  // so only the gemini-3 reasoning variants (pro / flash-preview / 3.1 / 3.6 / 3.5-flash-lite)
+  // get a thinkingLevel.
+  if (/^gemini-3/i.test(model) && !/^gemini-3\.5-flash$/i.test(model)) {
     return {
       includeThoughts,
       thinkingLevel: opts?.thinking?.thinkingLevel ?? 'minimal',
@@ -149,15 +193,84 @@ function buildThinkingConfig(modelId: string | undefined, opts?: LLMOptions): Re
   return { includeThoughts };
 }
 
+function cleanSchema(schema: any): any {
+  if (!schema || typeof schema !== 'object') return schema;
+  if (Array.isArray(schema)) {
+    return schema.map(cleanSchema);
+  }
+  const cleaned: any = {};
+  for (const [key, value] of Object.entries(schema)) {
+    if (key === 'additionalProperties') {
+      continue;
+    }
+    cleaned[key] = cleanSchema(value);
+  }
+  return cleaned;
+}
+
 function toGenerationBody(messages: LLMMessage[], opts?: LLMOptions): Record<string, unknown> {
   const semanticMessages = opts?.semanticProfile ? applySemanticPrompt(messages, opts.semanticProfile) : messages;
   const systemTexts = semanticMessages.filter((message) => message.role === 'system').map((message) => message.content.trim()).filter(Boolean);
+  
   const contents = semanticMessages
     .filter((message) => message.role !== 'system')
-    .map((message) => ({
-      role: message.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: message.content }],
-    }));
+    .map((message) => {
+      const role = message.role === 'assistant' ? 'model' : 'user';
+      let parts: any[] = [];
+      
+      if (message.role === 'tool') {
+        let name = message.name;
+        if (!name && message.tool_call_id) {
+          for (let i = messages.indexOf(message) - 1; i >= 0; i--) {
+            const prior = messages[i];
+            if (prior.role === 'assistant' && Array.isArray(prior.tool_calls)) {
+              const match = prior.tool_calls.find((tc: any) => tc.id === message.tool_call_id);
+              if (match) {
+                name = match.function?.name ?? match.name;
+                break;
+              }
+            }
+          }
+        }
+        parts = [
+          {
+            functionResponse: {
+              name: name ?? 'unknown',
+              response: (() => {
+                try {
+                  const parsed = JSON.parse(message.content);
+                  if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+                    return parsed;
+                  }
+                  return { content: message.content };
+                } catch {
+                  return { content: message.content };
+                }
+              })(),
+            },
+          },
+        ];
+      } else if (message.tool_calls && message.tool_calls.length > 0) {
+        parts = [
+          ...(message.content ? [{ text: message.content }] : []),
+          ...message.tool_calls.map((tc: any) => {
+            const signature = tc.thought_signature ?? tc.thoughtSignature ?? recallToolCallThoughtSignature(tc.id);
+            return {
+              functionCall: {
+                name: tc.function?.name ?? tc.name,
+                args: typeof tc.function?.arguments === 'string' ? JSON.parse(tc.function.arguments) : tc.function?.arguments ?? tc.args ?? {},
+              },
+              ...(signature ? { thoughtSignature: signature } : {}),
+            };
+          }),
+        ];
+      } else {
+        parts = [{ text: message.content }];
+      }
+      
+      return { role, parts };
+    });
+
   const body: Record<string, unknown> = {
     contents: contents.length > 0 ? contents : [{ role: 'user', parts: [{ text: '' }] }],
   };
@@ -183,6 +296,39 @@ function toGenerationBody(messages: LLMMessage[], opts?: LLMOptions): Record<str
     };
   }
   if (Object.keys(generationConfig).length > 0) body.generationConfig = generationConfig;
+
+  // Add tools mapping for Gemini API
+  if (Array.isArray(opts?.tools) && opts.tools.length > 0) {
+    body.tools = [
+      {
+        functionDeclarations: opts.tools.map((t: any) => ({
+          name: t.function?.name ?? t.name,
+          description: t.function?.description ?? t.description,
+          parameters: cleanSchema(t.function?.parameters ?? t.parameters),
+        })),
+      },
+    ];
+    
+    const toolChoice = opts.toolChoice;
+    if (toolChoice) {
+      if (toolChoice === 'none') {
+        body.toolConfig = { functionCallingConfig: { mode: 'NONE' } };
+      } else if (toolChoice === 'auto') {
+        body.toolConfig = { functionCallingConfig: { mode: 'AUTO' } };
+      } else if (typeof toolChoice === 'object') {
+        const functionName = toolChoice.function?.name ?? toolChoice.name;
+        if (functionName) {
+          body.toolConfig = {
+            functionCallingConfig: {
+              mode: 'ANY',
+              allowedFunctionNames: [functionName],
+            },
+          };
+        }
+      }
+    }
+  }
+
   return body;
 }
 
@@ -234,6 +380,27 @@ function extractImages(payload: GeminiGenerateResponse): Array<{ mimeType: strin
       };
     })
     .filter((entry): entry is { mimeType: string; data: string } => entry !== null);
+}
+
+function extractToolCalls(payload: GeminiGenerateResponse): any[] | undefined {
+  const parts = payload.candidates?.[0]?.content?.parts ?? [];
+  const toolCalls: any[] = [];
+  for (const part of parts) {
+    if (part.functionCall) {
+      const id = `call_${globalThis.crypto.randomUUID().replace(/-/g, '').substring(0, 24)}`;
+      rememberToolCallThoughtSignature(id, part.thoughtSignature);
+      toolCalls.push({
+        id,
+        type: 'function',
+        function: {
+          name: part.functionCall.name,
+          arguments: typeof part.functionCall.args === 'object' ? JSON.stringify(part.functionCall.args) : part.functionCall.args ?? '{}',
+        },
+        thought_signature: part.thoughtSignature,
+      });
+    }
+  }
+  return toolCalls.length > 0 ? toolCalls : undefined;
 }
 
 function parseGoogleError(payload: unknown): {
@@ -369,9 +536,14 @@ function hasAnotherConfiguredKeyForModel(
   config: GeminiApiProviderConfig,
   model: string,
   excludedKeyIds: Set<string>,
+  allowedKeyIds?: string[],
+  ownerUserId?: string,
 ): boolean {
+  const allowed = allowedKeyIds && allowedKeyIds.length > 0 ? new Set(allowedKeyIds) : null;
   return config.keys.some((key) => (
     key.enabled &&
+    (!allowed || allowed.has(key.id)) &&
+    (!ownerUserId || key.userId === ownerUserId) &&
     !excludedKeyIds.has(key.id) &&
     (!key.models || key.models.length === 0 || key.models.includes(model))
   ));
@@ -436,9 +608,14 @@ function appendLocalAvailabilityAttempts(input: {
   model: string;
   estimatedTokens: number;
   error: GeminiApiProviderError;
+  allowedKeyIds?: string[];
+  ownerUserId?: string;
 }): void {
+  const allowed = input.allowedKeyIds && input.allowedKeyIds.length > 0 ? new Set(input.allowedKeyIds) : null;
   const eligibleKeys = input.config.keys
     .filter((key) => key.enabled)
+    .filter((key) => !allowed || allowed.has(key.id))
+    .filter((key) => !input.ownerUserId || key.userId === input.ownerUserId)
     .filter((key) => keyAllowsModel(key, input.model));
   if (eligibleKeys.length === 0) {
     input.attempts.push({
@@ -763,6 +940,8 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
     options?: {
       excludeKeyIds?: string[];
       signal?: AbortSignal;
+      allowedKeyIds?: string[];
+      ownerUserId?: string;
     },
   ): Promise<GeminiApiKeyReservation> {
     while (true) {
@@ -770,11 +949,15 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
       try {
         return keyPool.reserve(model, estimatedTokens, {
           excludeKeyIds: options?.excludeKeyIds,
+          allowedKeyIds: options?.allowedKeyIds,
+          ownerUserId: options?.ownerUserId,
         });
       } catch (error) {
         if (!(error instanceof GeminiApiProviderError) || error.code !== 'gemini_api_quota_unavailable') throw error;
         const backpressure: GeminiApiLocalBackpressure | null = keyPool.nextLocalBackpressure(model, estimatedTokens, {
           excludeKeyIds: options?.excludeKeyIds,
+          allowedKeyIds: options?.allowedKeyIds,
+          ownerUserId: options?.ownerUserId,
         });
         if (!backpressure || backpressure.waitMs > LOCAL_BACKPRESSURE_MAX_WAIT_MS) throw error;
         lastError = `local_${backpressure.reason}_backpressure:${model}:${backpressure.quotaGroup}`;
@@ -811,6 +994,8 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
         reservation = await reserveWithLocalBackpressure(model, estimatedTokens, {
           excludeKeyIds: [...excludedKeyIds],
           signal,
+          allowedKeyIds: attemptOptions?.geminiApiKeyIds,
+          ownerUserId: attemptOptions?.geminiApiOwnerUserId,
         });
       } catch (error) {
         if (error instanceof GeminiApiProviderError) {
@@ -821,6 +1006,8 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
             model,
             estimatedTokens,
             error,
+            allowedKeyIds: attemptOptions?.geminiApiKeyIds,
+            ownerUserId: attemptOptions?.geminiApiOwnerUserId,
           });
         }
         throw error instanceof GeminiApiProviderError
@@ -948,7 +1135,7 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
         excludedKeyIds.add(reservation.key.id);
         if (
           shouldRetryWithAnotherKey(providerError) &&
-          hasAnotherConfiguredKeyForModel(config, model, excludedKeyIds)
+          hasAnotherConfiguredKeyForModel(config, model, excludedKeyIds, attemptOptions?.geminiApiKeyIds, attemptOptions?.geminiApiOwnerUserId)
         ) {
           continue;
         }
@@ -1093,6 +1280,8 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
           reservation = await reserveWithLocalBackpressure(model, estimatedTokens, {
             excludeKeyIds: [...excludedKeyIds],
             signal: opts?.signal,
+            allowedKeyIds: attemptOptions?.geminiApiKeyIds,
+            ownerUserId: attemptOptions?.geminiApiOwnerUserId,
           });
         } catch (error) {
           if (error instanceof GeminiApiProviderError) {
@@ -1103,6 +1292,8 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
               model,
               estimatedTokens,
               error,
+              allowedKeyIds: attemptOptions?.geminiApiKeyIds,
+              ownerUserId: attemptOptions?.geminiApiOwnerUserId,
             });
           }
           if (shouldRetryReservationFailure(error, remainingModels, attemptOptions)) {
@@ -1135,11 +1326,12 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
           const content = normalizeSemanticOutput(extractText(gemini), attemptOptions?.semanticProfile);
           const finishReason = normalizeFinishReason(gemini);
           const images = extractImages(gemini);
+          const toolCalls = extractToolCalls(gemini);
           const usage = gemini.usageMetadata;
 
           // An empty completion (no text, no image) is never a real success. This happens when
           // the model truncates to the output-token limit before emitting visible text.
-          if (content.trim().length === 0 && images.length === 0) {
+          if (content.trim().length === 0 && images.length === 0 && !toolCalls) {
             // Truncated for length: retry the same model with a larger output budget.
             if (finishReason === 'length' && emptyResponseRetries < EMPTY_RESPONSE_RETRY_LIMIT) {
               emptyResponseRetries += 1;
@@ -1175,7 +1367,8 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
           lastLatencyMs = Date.now() - started;
           return {
             content,
-            finishReason,
+            finishReason: toolCalls ? ('tool_calls' as any) : finishReason,
+            toolCalls,
             images,
             provider: 'gemini-api',
             model: opts?.model ?? model,
@@ -1218,7 +1411,7 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
           excludedKeyIds.add(reservation.key.id);
           if (
             shouldRetryWithAnotherKey(providerError) &&
-            hasAnotherConfiguredKeyForModel(config, model, excludedKeyIds)
+            hasAnotherConfiguredKeyForModel(config, model, excludedKeyIds, attemptOptions?.geminiApiKeyIds, attemptOptions?.geminiApiOwnerUserId)
           ) {
             continue;
           }
@@ -1336,7 +1529,7 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
 
   return {
     provider: 'gemini-api',
-    model: 'gemini-3.5-flash',
+    model: 'gemini-3.6-flash',
 
     async chat(messages, opts): Promise<LLMResponse> {
       return generate(messages, opts);

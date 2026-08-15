@@ -133,7 +133,7 @@ function estimateReservationTokens(messages: LLMMessage[], _opts?: LLMOptions): 
 }
 
 function normalizeGeminiApiModel(model: string | undefined): string {
-  const normalized = String(model ?? 'gemini-3.6-flash').trim().toLowerCase();
+  const normalized = String(model ?? 'gemini-3.7-flash').trim().toLowerCase();
   return normalized.replace(/^models\//, '');
 }
 
@@ -142,6 +142,19 @@ function normalizeGeminiApiModel(model: string | undefined): string {
 // falling through to the next model in the chain.
 const EMPTY_RESPONSE_RETRY_LIMIT = 2;
 const EMPTY_RESPONSE_RETRY_TOKENS = 1024;
+
+function requiresJsonPayload(opts?: LLMOptions): boolean {
+  return opts?.semanticProfile?.outputMode === 'json';
+}
+
+function isValidJsonPayload(text: string): boolean {
+  try {
+    JSON.parse(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
 const GEMMA_31B_HEDGED_MODEL = 'gemma-4-31b-it';
 const GEMMA_HEDGED_FALLBACK_MODELS = [
   'gemma-4-26b-a4b-it',
@@ -165,30 +178,49 @@ class HedgedRequestCancelled extends Error {
 
 function buildThinkingConfig(modelId: string | undefined, opts?: LLMOptions): Record<string, unknown> | null {
   const model = normalizeGeminiApiModel(modelId);
-  // Gemma 4 and Gemini 3.5 Flash (exact match only — NOT 3.5-flash-lite, which is a
-  // different model and untested for this quirk) reject any thinkingConfig, including an
-  // otherwise harmless `includeThoughts: false`. Omit the field entirely for those models.
-  if (!model.startsWith('gemini-') || /^gemma-/i.test(model) || /^gemini-3\.5-flash$/i.test(model)) {
+  // Gemma models reject Gemini's thinkingConfig. Omit the field entirely for them.
+  if (!model.startsWith('gemini-') || /^gemma-/i.test(model)) {
     return null;
   }
   const includeThoughts = opts?.thinking?.includeThoughts === true;
-  // gemini-3.5-flash rejects thinkingLevel ("Thinking level is not supported for this model"),
-  // so only the gemini-3 reasoning variants (pro / flash-preview / 3.1 / 3.6 / 3.5-flash-lite)
-  // get a thinkingLevel.
-  if (/^gemini-3/i.test(model) && !/^gemini-3\.5-flash$/i.test(model)) {
+  const requestedLevel = opts?.thinking?.thinkingLevel ?? 'minimal';
+  const maxThinking = requestedLevel === 'max';
+
+  // Gemini 3.x uses thinkingLevel. `max` is a GemRouter policy alias for Google's
+  // highest supported reasoning allowance, `high`.
+  if (/^gemini-3/i.test(model)) {
+    // Gemini 3.7 Flash rejects `minimal`. When the router is left at its historical
+    // minimal default, omit the level for 3.7 and let the model choose its supported
+    // default. Explicit high/max remains enforced normally.
+    if (/^gemini-3\.7-flash/i.test(model) && requestedLevel === 'minimal') {
+      return { includeThoughts };
+    }
     return {
       includeThoughts,
-      thinkingLevel: opts?.thinking?.thinkingLevel ?? 'minimal',
+      thinkingLevel: maxThinking ? 'high' : requestedLevel,
     };
+  }
+  // Gemini 2.5 uses numeric thinking budgets. In max mode, enforce the documented
+  // per-family maximum rather than relying on dynamic/default thinking.
+  if (/^gemini-2\.5-pro/i.test(model)) {
+    const configuredBudget = opts?.thinking?.thinkingBudget;
+    if (maxThinking) {
+      return { includeThoughts, thinkingBudget: 32_768 };
+    }
+    // Pro cannot disable thinking, so do not forward the router's Flash/Lite-oriented
+    // default of 0. Omission preserves Gemini's dynamic-thinking default.
+    if (configuredBudget === -1 || (typeof configuredBudget === 'number' && configuredBudget >= 128)) {
+      return { includeThoughts, thinkingBudget: configuredBudget };
+    }
+    return { includeThoughts };
   }
   if (/^gemini-2\.5-(?:flash|flash-lite)/i.test(model)) {
     return {
       includeThoughts,
-      thinkingBudget: typeof opts?.thinking?.thinkingBudget === 'number' ? opts.thinking.thinkingBudget : 0,
+      thinkingBudget: maxThinking
+        ? 24_576
+        : (typeof opts?.thinking?.thinkingBudget === 'number' ? opts.thinking.thinkingBudget : 0),
     };
-  }
-  if (/^gemini-2\.5-pro/i.test(model)) {
-    return { includeThoughts };
   }
   return { includeThoughts };
 }
@@ -287,14 +319,24 @@ function toGenerationBody(messages: LLMMessage[], opts?: LLMOptions): Record<str
   if (Array.isArray(opts?.imageConfig?.responseModalities) && opts.imageConfig.responseModalities.length > 0) {
     generationConfig.responseModalities = opts.imageConfig.responseModalities;
   }
-  if (opts?.imageConfig?.aspectRatio || opts?.imageConfig?.imageSize) {
-    generationConfig.responseFormat = {
-      image: {
-        ...(opts.imageConfig.aspectRatio ? { aspectRatio: opts.imageConfig.aspectRatio } : {}),
-        ...(opts.imageConfig.imageSize ? { imageSize: opts.imageConfig.imageSize } : {}),
-      },
+
+  // Enforce structured JSON at the Gemini API boundary instead of relying only on
+  // semantic prompt instructions. OpenAI response_format and Ollama format are
+  // normalized into semanticProfile by the compatibility layer before reaching here.
+  const responseFormat: Record<string, unknown> = {};
+  if (opts?.semanticProfile?.outputMode === 'json') {
+    responseFormat.text = {
+      mimeType: 'APPLICATION_JSON',
+      ...(opts.semanticProfile.jsonSchema !== undefined ? { schema: opts.semanticProfile.jsonSchema } : {}),
     };
   }
+  if (opts?.imageConfig?.aspectRatio || opts?.imageConfig?.imageSize) {
+    responseFormat.image = {
+      ...(opts.imageConfig.aspectRatio ? { aspectRatio: opts.imageConfig.aspectRatio } : {}),
+      ...(opts.imageConfig.imageSize ? { imageSize: opts.imageConfig.imageSize } : {}),
+    };
+  }
+  if (Object.keys(responseFormat).length > 0) generationConfig.responseFormat = responseFormat;
   if (Object.keys(generationConfig).length > 0) body.generationConfig = generationConfig;
 
   // Add tools mapping for Gemini API
@@ -785,6 +827,7 @@ function shouldRetryWithFallbackModel(
     case 'gemini_api_model_not_found':
     case 'gemini_api_upstream_error':
     case 'gemini_api_empty_response':
+    case 'gemini_api_invalid_response':
     case 'gemini_api_timeout':
       return true;
     default:
@@ -1053,6 +1096,25 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
             continue;
           }
           throw new GeminiApiProviderError('gemini_api_empty_response', `Model ${model} returned an empty completion (finishReason=${finishReason}).`, {
+            statusCode: 502,
+            fallbackEligible: true,
+            upstreamModel: model,
+            upstreamApiKeyId: reservation.key.id,
+            upstreamQuotaGroup: reservation.key.quotaGroup,
+          });
+        }
+
+        if (requiresJsonPayload(attemptOptions) && !isValidJsonPayload(content)) {
+          if (finishReason === 'length' && emptyResponseRetries < EMPTY_RESPONSE_RETRY_LIMIT) {
+            emptyResponseRetries += 1;
+            const previous = effectiveOptions?.maxTokens ?? 0;
+            effectiveOptions = {
+              ...attemptOptions,
+              maxTokens: Math.max(previous * 4, EMPTY_RESPONSE_RETRY_TOKENS * emptyResponseRetries),
+            };
+            continue;
+          }
+          throw new GeminiApiProviderError('gemini_api_invalid_response', `Model ${model} returned a non-JSON completion while JSON output was required.`, {
             statusCode: 502,
             fallbackEligible: true,
             upstreamModel: model,
@@ -1353,6 +1415,28 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
             });
           }
 
+          // Native structured output should already be valid JSON. If output-token truncation
+          // cuts the document short, retry with a larger budget; otherwise never leak an
+          // invalid payload through a compatibility surface that explicitly required JSON.
+          if (!toolCalls && requiresJsonPayload(attemptOptions) && !isValidJsonPayload(content)) {
+            if (finishReason === 'length' && emptyResponseRetries < EMPTY_RESPONSE_RETRY_LIMIT) {
+              emptyResponseRetries += 1;
+              const previous = effectiveOptions?.maxTokens ?? 0;
+              effectiveOptions = {
+                ...attemptOptions,
+                maxTokens: Math.max(previous * 4, EMPTY_RESPONSE_RETRY_TOKENS * emptyResponseRetries),
+              };
+              continue;
+            }
+            throw new GeminiApiProviderError('gemini_api_invalid_response', `Model ${model} returned a non-JSON completion while JSON output was required.`, {
+              statusCode: 502,
+              fallbackEligible: true,
+              upstreamModel: model,
+              upstreamApiKeyId: reservation.key.id,
+              upstreamQuotaGroup: reservation.key.quotaGroup,
+            });
+          }
+
           ledger.markSuccess({
             quotaGroup: reservation.key.quotaGroup,
             keyId: reservation.key.id,
@@ -1529,7 +1613,7 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
 
   return {
     provider: 'gemini-api',
-    model: 'gemini-3.6-flash',
+    model: 'gemini-3.7-flash',
 
     async chat(messages, opts): Promise<LLMResponse> {
       return generate(messages, opts);

@@ -791,6 +791,11 @@ async function refreshFreeTierPolicyIfStale(force = false): Promise<FreeTierPoli
       ], {
         model: config.freeTierPolicy.parseModel,
         allowedModelIds: config.freeTierPolicy.fallbackModelIds,
+        thinking: {
+          includeThoughts: config.generation.includeThoughts,
+          thinkingBudget: config.generation.thinkingBudget,
+          thinkingLevel: config.generation.thinkingLevel,
+        },
       });
       const parsed = extractJsonObject(response.content) ?? {};
       const textModelIds = readStringList(parsed.textModelIds);
@@ -897,7 +902,32 @@ function recordInteraction(input: {
     policyFallbackReason: input.policyFallbackReason,
     fallbackAttempts: response?.fallbackAttempts,
     error: input.error,
+    perAppLimit: input.appRecord.ownerUserId ? 10 : undefined,
   });
+
+  // A personal activity feed belongs to the owner of the upstream Gemini key,
+  // not to the client application that happened to send the request.  This also
+  // covers a user's own app when a request fails before an upstream key is picked.
+  const upstreamKey = response?.apiKeyId
+    ? config.geminiApi.keys.find((key) => key.id === response.apiKeyId)
+    : undefined;
+  let activityOwnerId = upstreamKey?.userId;
+  if (!activityOwnerId && upstreamKey?.owner) {
+    const matchedUser = userStore.list().find((u) => u.username.toLowerCase() === upstreamKey.owner!.toLowerCase());
+    if (matchedUser) activityOwnerId = matchedUser.id;
+  }
+  if (!activityOwnerId) {
+    activityOwnerId = input.appRecord.ownerUserId;
+  }
+  if (activityOwnerId) {
+    const owner = userStore.findById(activityOwnerId);
+    if (owner) {
+      interactions.trimUserActivity({
+        appIds: userAppIdsForUser(owner),
+        apiKeyIds: accountIdsForUser(activityOwnerId),
+      }, 10);
+    }
+  }
 }
 
 function buildInteractionResponseFromError(error: unknown): Partial<LLMResponse> | undefined {
@@ -3363,8 +3393,24 @@ app.post<{ Body: { id?: string } }>('/admin/provider/gemini-api/accounts/remove'
   return { ok: true, removed: id, reload: result, accounts: config.geminiApi.keys.map(maskAccount) };
 });
 
+function isKeyOwnedByUser(key: typeof config.geminiApi.keys[number], user: UserRecord): boolean {
+  if (key.userId === user.id) return true;
+  if (key.owner && user.username && key.owner.toLowerCase() === user.username.toLowerCase()) return true;
+  return false;
+}
+
+function userAppIdsForUser(user: UserRecord): string[] {
+  const ownedApps = appStore.list().filter((app) => app.ownerUserId === user.id).map((app) => app.id);
+  if (user.appId && !ownedApps.includes(user.appId)) {
+    ownedApps.push(user.appId);
+  }
+  return ownedApps;
+}
+
 function accountIdsForUser(userId: string): string[] {
-  return config.geminiApi.keys.filter((key) => key.userId === userId).map((key) => key.id);
+  const user = userStore.findById(userId);
+  if (!user) return [];
+  return config.geminiApi.keys.filter((key) => isKeyOwnedByUser(key, user)).map((key) => key.id);
 }
 
 function nextOwnedAccountId(username: string): string {
@@ -3388,14 +3434,18 @@ app.get('/user/summary', async (request, reply) => {
   if (!clientApp || clientApp.revokedAt) {
     return sendError(reply, 409, { message: 'This user no longer has an active API profile', type: 'invalid_request_error', code: 'user_api_profile_unavailable' });
   }
+  const ownedAccountIds = accountIdsForUser(user.id);
+  const userAppIds = userAppIdsForUser(user);
+  const activityFilter = { appIds: userAppIds, apiKeyIds: ownedAccountIds };
+  interactions.trimUserActivity(activityFilter, 10);
   return {
     ok: true,
     username: user.username,
     apiKeyPreview: clientApp.keyPreview,
     apiBaseUrl: `${inferPublicBaseUrl(request).replace(/\/$/, '')}/v1`,
     models: clientApp.allowedModels,
-    accounts: config.geminiApi.keys.filter((key) => key.userId === user.id).map(maskAccount),
-    stats: interactions.summaryForApps([clientApp.id], 60),
+    accounts: config.geminiApi.keys.filter((key) => isKeyOwnedByUser(key, user)).map(maskAccount),
+    stats: interactions.summaryForUserActivity(activityFilter, 10),
   };
 });
 
@@ -3611,10 +3661,17 @@ app.get('/admin/provider/models-config', async (request, reply) => {
   const enabled = config.freeTierPolicy.textModelIds;
   const enabledSet = new Set(enabled);
   const available = knownGeminiTextModels().filter((m) => !enabledSet.has(m));
+  const usageByModel = Object.fromEntries(interactions.summary(1_000).byModel.map((entry) => [entry.model, {
+    requests: entry.requests,
+    succeeded: entry.succeeded,
+    failed: entry.failed,
+    avgLatencyMs: entry.avgLatencyMs,
+  }]));
   return {
     ok: true,
     enabled,
     available,
+    usageByModel,
     limits: config.geminiApi.limits,
   };
 });

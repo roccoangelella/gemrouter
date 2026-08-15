@@ -2027,7 +2027,7 @@ export function renderAppShell(input: {
           </div>
         </section>
 
-        <section class="panel section" data-window-scope="admin" data-window="admin-global">
+        <section class="panel section" data-window-scope="admin" data-window="admin-overview">
           <div class="section-head">
             <div>
               <h3 class="section-title">${svgIcon('api')} Model Reliability</h3>
@@ -2060,7 +2060,7 @@ export function renderAppShell(input: {
           </div>
         </section>
 
-        <section class="panel section" data-window-scope="admin" data-window="admin-global">
+        <section class="panel section" data-window-scope="admin" data-window="admin-overview">
           <div class="section-head">
             <div>
               <h3 class="section-title">Recent Interactions</h3>
@@ -2143,8 +2143,10 @@ export function renderAppShell(input: {
           </aside>
           <div class="workspace-content">
         <section class="panel section" data-window-scope="user" data-window="user-overview">
-          <div class="section-head"><div><h3 class="section-title">My usage</h3><p class="section-copy">Requests made with your own API key and Gemini accounts.</p></div></div>
+          <div class="section-head"><div><h3 class="section-title">My usage</h3><p class="section-copy">Every call routed with one of your connected Gemini keys, from any application.</p></div></div>
           <div id="user-stats-grid" class="stats-grid"></div>
+          <div class="section-head" style="margin-top:24px"><div><h3 class="section-title">Your last 10 calls</h3><p class="section-copy">Input and output excerpts, app, model, route, usage, and latency. Only your latest 10 calls are retained.</p></div></div>
+          <div class="table-wrap"><table class="table responsive-table"><thead><tr><th>When</th><th>App</th><th>Model</th><th>Input</th><th>Output</th><th>Usage</th></tr></thead><tbody id="user-interactions-table"></tbody></table></div>
         </section>
         <section class="panel section" data-window-scope="user" data-window="user-api">
           <div class="section-head"><div><h3 class="section-title">OpenAI endpoint</h3><p class="section-copy">Use this URL and your personal client API key in any OpenAI-compatible application.</p></div></div>
@@ -2372,6 +2374,7 @@ export function renderAppShell(input: {
       const userAccountForm = document.getElementById('user-account-form');
       const userAccountStatus = document.getElementById('user-account-status');
       const userAccountsTable = document.getElementById('user-accounts-table');
+      const userInteractionsTable = document.getElementById('user-interactions-table');
 
       function fmtNumber(value) {
         return new Intl.NumberFormat().format(value || 0);
@@ -2779,11 +2782,23 @@ export function renderAppShell(input: {
       const modelsConfigStatus = document.getElementById('models-config-status');
       let modelsEnabledOrder = [];
       let modelsAvailableList = [];
+      let modelsUsageById = {};
+
+      function renderModelUsage(id) {
+        const usage = modelsUsageById[id];
+        if (!usage || !usage.requests) return '<div class="footer-note">No routed calls yet</div>';
+        const successRate = Math.round((Number(usage.succeeded || 0) / Number(usage.requests || 1)) * 100);
+        return '<div class="footer-note">' +
+          escapeHtml(String(usage.requests)) + ' calls · ' +
+          escapeHtml(String(successRate)) + '% success · ' +
+          escapeHtml(String(usage.avgLatencyMs || 0)) + ' ms avg' +
+        '</div>';
+      }
 
       function renderModelsConfig() {
         if (!modelsEnabledBox) return;
         modelsEnabledBox.innerHTML = modelsEnabledOrder.map(function(id, index) {
-          return '<div class="model-picker-option"><div><span class="model-picker-title">' + (index + 1) + '. ' + escapeHtml(id) + '</span></div>' +
+          return '<div class="model-picker-option"><div><span class="model-picker-title">' + (index + 1) + '. ' + escapeHtml(id) + '</span>' + renderModelUsage(id) + '</div>' +
             '<div>' +
             '<button type="button" class="secondary" data-mc-up="' + escapeHtml(id) + '"' + (index === 0 ? ' disabled' : '') + '>↑</button> ' +
             '<button type="button" class="secondary" data-mc-down="' + escapeHtml(id) + '"' + (index === modelsEnabledOrder.length - 1 ? ' disabled' : '') + '>↓</button> ' +
@@ -2791,7 +2806,7 @@ export function renderAppShell(input: {
             '</div></div>';
         }).join('') || '<div class="footer-note" style="padding:10px">No models enabled.</div>';
         modelsAvailableBox.innerHTML = modelsAvailableList.map(function(id) {
-          return '<div class="model-picker-option"><div><span class="model-picker-title">' + escapeHtml(id) + '</span></div>' +
+          return '<div class="model-picker-option"><div><span class="model-picker-title">' + escapeHtml(id) + '</span>' + renderModelUsage(id) + '</div>' +
             '<button type="button" class="secondary" data-mc-add="' + escapeHtml(id) + '">+ add</button></div>';
         }).join('') || '<div class="footer-note" style="padding:10px">All known models are enabled.</div>';
       }
@@ -2804,6 +2819,7 @@ export function renderAppShell(input: {
           const data = await request('/admin/provider/models-config');
           modelsEnabledOrder = Array.isArray(data.enabled) ? data.enabled.slice() : [];
           modelsAvailableList = Array.isArray(data.available) ? data.available.slice() : [];
+          modelsUsageById = data && typeof data.usageByModel === 'object' && data.usageByModel ? data.usageByModel : {};
           renderModelsConfig();
         } catch (error) {
           if (modelsConfigStatus) modelsConfigStatus.textContent = error.message || 'Failed to load model config.';
@@ -3108,10 +3124,30 @@ export function renderAppShell(input: {
         userApiKeyPreview.value = profile.apiKeyPreview || '';
         userModels.textContent = 'Allowed models\\n' + (profile.models || []).join('\\n');
         renderStats(profile.stats, userStatsGrid);
+        renderUserInteractions(profile.stats);
         const accounts = Array.isArray(profile.accounts) ? profile.accounts : [];
         userAccountsTable.innerHTML = accounts.map(function(account) {
           return '<tr><td><strong>' + escapeHtml(account.id) + '</strong><div class="footer-note mono">' + escapeHtml(account.keyPreview || '') + '</div></td><td>' + escapeHtml(account.projectId || '—') + '</td><td><span class="chip ' + (account.enabled === false ? 'warn' : 'good') + '">' + (account.enabled === false ? 'disabled' : 'enabled') + '</span></td><td><button type="button" class="bad" data-account-id="' + escapeHtml(account.id) + '">Remove</button></td></tr>';
         }).join('') || '<tr><td colspan="4" class="muted">No Gemini API keys connected yet.</td></tr>';
+      }
+
+      function renderUserInteractions(summary) {
+        if (!userInteractionsTable) return;
+        const recent = Array.isArray(summary && summary.recent) ? summary.recent.slice(0, 10) : [];
+        userInteractionsTable.innerHTML = recent.map(function(item) {
+          const usage = item.usage
+            ? (item.usage.prompt_tokens + ' / ' + item.usage.completion_tokens + ' / ' + item.usage.total_tokens)
+            : 'n/a';
+          const model = item.requestedModel || item.model || 'unknown';
+          return '<tr>' +
+            '<td data-label="When">' + escapeHtml(new Date(item.createdAt).toLocaleString()) + '<div class="footer-note">' + escapeHtml(item.route || '') + '</div></td>' +
+            '<td data-label="App"><strong>' + escapeHtml(item.appName || 'Personal app') + '</strong></td>' +
+            '<td data-label="Model">' + escapeHtml(model) + '</td>' +
+            '<td data-label="Input">' + escapeHtml(item.promptExcerpt || '(empty)') + '</td>' +
+            '<td data-label="Output">' + escapeHtml(item.responseExcerpt || item.error || '(empty)') + '</td>' +
+            '<td data-label="Usage">' + escapeHtml(usage) + '<div class="footer-note">' + escapeHtml(String(item.latencyMs || 0)) + ' ms</div></td>' +
+          '</tr>';
+        }).join('') || '<tr><td colspan="6" class="muted">No calls have used one of your connected Gemini keys yet. Calls from any app appear here when they use one of your keys.</td></tr>';
       }
 
       async function loadUserProfile() {
@@ -3153,7 +3189,10 @@ export function renderAppShell(input: {
 
       // Strongest -> weakest. Anything not listed sorts after, alphabetically.
       const MODEL_POWER_ORDER = [
+        'gemini-3.7-flash',
+        'gemini-3.6-flash',
         'gemini-3.5-flash',
+        'gemini-3.5-flash-lite',
         'gemini-3-flash',
         'gemini-3-flash-preview',
         'gemini-2.5-pro',

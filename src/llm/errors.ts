@@ -13,6 +13,7 @@ export type LLMProviderErrorCode =
   | 'gemini_api_high_demand'
   | 'gemini_api_upstream_error'
   | 'gemini_api_empty_response'
+  | 'gemini_api_invalid_response'
   | 'gemini_api_timeout'
   | 'gemini_api_stream_error'
   | 'ollama_model_not_found'

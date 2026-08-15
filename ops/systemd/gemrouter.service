@@ -6,8 +6,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=ubuntu
-WorkingDirectory=/var/www/GemRouterFE
-EnvironmentFile=/var/www/GemRouterFE/.env
+WorkingDirectory=/home/ubuntu/Projects/GemRouter
+EnvironmentFile=/home/ubuntu/Projects/GemRouter/.env
 Environment=HOME=/home/ubuntu
 Environment=NODE_ENV=production
 ExecStartPre=/usr/bin/pnpm build

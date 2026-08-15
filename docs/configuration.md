@@ -86,16 +86,20 @@ Order determines which backend is tried first. When `backendPreference=auto`, th
 | `GEMROUTER_COMPAT_DEFAULT_SURFACE` | `gemrouter` | Default surface (`gemrouter`, `openai`, `deepseek`, `ollama`) |
 | `GEMROUTER_COMPAT_ENABLED_SURFACES` | all | Comma-separated list of enabled surfaces |
 
+## Structured JSON output
+
+GemRouter maps compatibility-surface JSON requests to Gemini native structured output. OpenAI-compatible `response_format: {"type":"json_object"}` enforces `application/json`; `response_format: {"type":"json_schema", ...}` additionally forwards the JSON Schema. Ollama `format: "json"` and object-valued `format` are mapped the same way. The Gemini provider sends these as `generationConfig.responseFormat.text`, so JSON correctness is enforced upstream rather than only requested through prompting. GemRouter also validates the completed payload locally: truncated JSON is retried with a larger output budget, and a persistently non-JSON completion is rejected/fallback-eligible rather than returned as a successful JSON-mode response.
+
 ## Thinking / reasoning
 
 | Variable | Default | Description |
 |---|---|---|
 | `GEMROUTER_INCLUDE_THOUGHTS` | `false` | Include thinking tokens in response |
 | `GEMROUTER_STRIP_REASONING` | `true` | Strip `<thinking>` blocks before returning |
-| `GEMROUTER_THINKING_LEVEL` | `minimal` | `none`, `minimal`, `low`, `medium`, `high`, `max` |
-| `GEMROUTER_THINKING_BUDGET` | `0` | Token budget for thinking (0 = model default) |
+| `GEMROUTER_THINKING_LEVEL` | `minimal` | `minimal`, `low`, `medium`, `high`, `max` (`max` enforces the highest supported setting per Gemini family) |
+| `GEMROUTER_THINKING_BUDGET` | `0` | Explicit Gemini 2.5 thinking budget; `0` disables thinking on Flash/Flash-Lite |
 
-Thinking config is applied per model: omitted entirely for `gemma-*` and `gemini-3.5-flash` (they reject it), `thinkingLevel` for `gemini-3.*` reasoning variants, `thinkingBudget` for `gemini-2.5-flash`/`-lite`.
+Thinking config is applied per model: omitted entirely for `gemma-*`; `thinkingLevel` for Gemini 3.x; `thinkingBudget` for Gemini 2.5. In `max` mode, Gemini 3.x receives `thinkingLevel: high`, Gemini 2.5 Pro receives a 32,768-token budget, and Gemini 2.5 Flash/Flash-Lite receive a 24,576-token budget.
 
 ## Local Ollama (vision + embeddings)
 

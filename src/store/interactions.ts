@@ -91,6 +91,13 @@ interface RecordInteractionInput {
   policyFallbackReason?: string;
   fallbackAttempts?: InteractionRecord['fallbackAttempts'];
   error?: string;
+  /** Self-service user apps retain only their most recent private call log entries. */
+  perAppLimit?: number;
+}
+
+interface InteractionFilter {
+  appIds?: string[];
+  apiKeyIds?: string[];
 }
 
 const MAX_RECORDS = 1000;
@@ -158,6 +165,14 @@ export class InteractionStore {
       error: input.error,
     };
     this.state.interactions.unshift(record);
+    if (typeof input.perAppLimit === 'number' && input.perAppLimit > 0) {
+      let keptForApp = 0;
+      this.state.interactions = this.state.interactions.filter((entry) => {
+        if (entry.appId !== record.appId) return true;
+        keptForApp += 1;
+        return keptForApp <= input.perAppLimit!;
+      });
+    }
     if (this.state.interactions.length > MAX_RECORDS) {
       this.state.interactions.length = MAX_RECORDS;
     }
@@ -252,7 +267,7 @@ export class InteractionStore {
     };
   }
 
-  summary(limit = 50, options?: { appIds?: string[] }): {
+  summary(limit = 50, options?: InteractionFilter): {
     totals: {
       requests: number;
       succeeded: number;
@@ -313,8 +328,13 @@ export class InteractionStore {
     let latencyTotal = 0;
 
     const appIds = options?.appIds && options.appIds.length > 0 ? new Set(options.appIds) : null;
+    const apiKeyIds = options?.apiKeyIds && options.apiKeyIds.length > 0 ? new Set(options.apiKeyIds) : null;
+    const matches = (record: InteractionRecord): boolean => {
+      if (!appIds && !apiKeyIds) return true;
+      return Boolean((appIds && appIds.has(record.appId)) || (apiKeyIds && record.apiKeyId && apiKeyIds.has(record.apiKeyId)));
+    };
     for (const record of this.state.interactions) {
-      if (appIds && !appIds.has(record.appId)) continue;
+      if (!matches(record)) continue;
       totals.requests += 1;
       if (record.status === 'succeeded') totals.succeeded += 1;
       if (record.status === 'failed') totals.failed += 1;
@@ -390,13 +410,48 @@ export class InteractionStore {
         }))
         .sort((left, right) => right.requests - left.requests),
       recent: this.state.interactions
-        .filter((record) => !appIds || appIds.has(record.appId))
+        .filter(matches)
         .slice(0, Math.max(1, limit)),
     };
   }
 
   summaryForApps(appIds: string[], limit = 50) {
     return this.summary(limit, { appIds });
+  }
+
+  summaryForUserActivity(input: { appIds: string[]; apiKeyIds: string[] }, limit = 10) {
+    return this.summary(limit, input);
+  }
+
+  trimApp(appId: string, limit: number): void {
+    const safeLimit = Math.max(1, Math.floor(limit));
+    let kept = 0;
+    const next = this.state.interactions.filter((entry) => {
+      if (entry.appId !== appId) return true;
+      kept += 1;
+      return kept <= safeLimit;
+    });
+    if (next.length !== this.state.interactions.length) {
+      this.state.interactions = next;
+      this.save();
+    }
+  }
+
+  trimUserActivity(input: { appIds: string[]; apiKeyIds: string[] }, limit: number): void {
+    const appIds = new Set(input.appIds);
+    const apiKeyIds = new Set(input.apiKeyIds);
+    const safeLimit = Math.max(1, Math.floor(limit));
+    let kept = 0;
+    const next = this.state.interactions.filter((entry) => {
+      const matches = appIds.has(entry.appId) || (entry.apiKeyId ? apiKeyIds.has(entry.apiKeyId) : false);
+      if (!matches) return true;
+      kept += 1;
+      return kept <= safeLimit;
+    });
+    if (next.length !== this.state.interactions.length) {
+      this.state.interactions = next;
+      this.save();
+    }
   }
 
   private load(): void {

@@ -75,7 +75,7 @@ export interface RuntimeConfig {
     includeThoughts: boolean;
     stripReasoning: boolean;
     thinkingBudget?: number;
-    thinkingLevel?: 'minimal' | 'low' | 'medium' | 'high';
+    thinkingLevel?: 'minimal' | 'low' | 'medium' | 'high' | 'max';
   };
   outboundProxy: {
     enabled: boolean;
@@ -691,7 +691,7 @@ export function loadConfig(
       thinkingBudget: readNumber(env, 0, 'GEMROUTER_THINKING_BUDGET'),
       thinkingLevel: (() => {
         const value = pick(env, 'GEMROUTER_THINKING_LEVEL')?.toLowerCase();
-        return value === 'minimal' || value === 'low' || value === 'medium' || value === 'high' ? value : 'minimal';
+        return value === 'minimal' || value === 'low' || value === 'medium' || value === 'high' || value === 'max' ? value : 'minimal';
       })(),
     },
     auditLogPath: path.join(dataDir, 'audit.log'),

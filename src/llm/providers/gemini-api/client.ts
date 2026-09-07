@@ -9,7 +9,7 @@ import {
 import { applySemanticPrompt, normalizeSemanticOutput } from '../../../lib/semantics.js';
 import { GeminiAccountModelCatalog } from './accountCatalog.js';
 import { GeminiApiProviderError } from './errors.js';
-import { GeminiApiKeyPool, type GeminiApiKeyReservation, type GeminiApiLocalBackpressure } from './keyPool.js';
+import { GeminiApiKeyPool, keyMatchesOwner, type GeminiApiKeyReservation, type GeminiApiLocalBackpressure } from './keyPool.js';
 import { GeminiApiModelDiscovery } from './modelDiscovery.js';
 import { GeminiApiQuotaLedger } from './quotaLedger.js';
 import type { GeminiApiKeyConfig, GeminiApiModelInfo, GeminiApiProviderConfig, GeminiApiUpstreamErrorSnapshot } from './types.js';
@@ -133,7 +133,7 @@ function estimateReservationTokens(messages: LLMMessage[], _opts?: LLMOptions): 
 }
 
 function normalizeGeminiApiModel(model: string | undefined): string {
-  const normalized = String(model ?? 'gemini-3.7-flash').trim().toLowerCase();
+  const normalized = String(model ?? 'gemini-3.8-flash').trim().toLowerCase();
   return normalized.replace(/^models\//, '');
 }
 
@@ -574,8 +574,17 @@ function sanitizeKeyPreview(key: string): string {
   return key.length <= 10 ? 'configured' : `${key.slice(0, 4)}...${key.slice(-4)}`;
 }
 
+function hasUnresolvedAuthFailure(ledger: GeminiApiQuotaLedger, keyId: string): boolean {
+  const state = ledger.getKeyState(keyId);
+  if (state.lastFailureCode !== 'gemini_api_auth_failed' || !state.lastFailureAt) return false;
+  const failureAt = Date.parse(state.lastFailureAt);
+  const successAt = state.lastSuccessAt ? Date.parse(state.lastSuccessAt) : 0;
+  return Number.isFinite(failureAt) && failureAt >= (Number.isFinite(successAt) ? successAt : 0);
+}
+
 function hasAnotherConfiguredKeyForModel(
   config: GeminiApiProviderConfig,
+  ledger: GeminiApiQuotaLedger,
   model: string,
   excludedKeyIds: Set<string>,
   allowedKeyIds?: string[],
@@ -584,8 +593,9 @@ function hasAnotherConfiguredKeyForModel(
   const allowed = allowedKeyIds && allowedKeyIds.length > 0 ? new Set(allowedKeyIds) : null;
   return config.keys.some((key) => (
     key.enabled &&
+    !hasUnresolvedAuthFailure(ledger, key.id) &&
     (!allowed || allowed.has(key.id)) &&
-    (!ownerUserId || key.userId === ownerUserId) &&
+    keyMatchesOwner(key, ownerUserId) &&
     !excludedKeyIds.has(key.id) &&
     (!key.models || key.models.length === 0 || key.models.includes(model))
   ));
@@ -603,12 +613,12 @@ function shouldRetryWithAnotherKey(error: GeminiApiProviderError): boolean {
     case 'gemini_api_quota_unavailable':
     case 'gemini_api_model_not_found':
     case 'gemini_api_upstream_error':
-    case 'gemini_api_timeout':
       return true;
-    // gemini_api_high_demand (503 overloaded) is a model-wide condition on Google's side:
-    // every account hits the same backend, so retrying other keys is pointless. Skip
-    // straight to the next fallback model instead and let the 30s cooldown park this one.
+    // gemini_api_high_demand (503 overloaded) and gemini_api_timeout (upstream unresponsiveness)
+    // are model-wide conditions on Google's side: every account hits the same backend, so
+    // retrying other keys just burns time/deadline. Skip straight to the next fallback model.
     case 'gemini_api_high_demand':
+    case 'gemini_api_timeout':
       return false;
     default:
       return false;
@@ -656,8 +666,9 @@ function appendLocalAvailabilityAttempts(input: {
   const allowed = input.allowedKeyIds && input.allowedKeyIds.length > 0 ? new Set(input.allowedKeyIds) : null;
   const eligibleKeys = input.config.keys
     .filter((key) => key.enabled)
+    .filter((key) => !hasUnresolvedAuthFailure(input.ledger, key.id))
     .filter((key) => !allowed || allowed.has(key.id))
-    .filter((key) => !input.ownerUserId || key.userId === input.ownerUserId)
+    .filter((key) => keyMatchesOwner(key, input.ownerUserId))
     .filter((key) => keyAllowsModel(key, input.model));
   if (eligibleKeys.length === 0) {
     input.attempts.push({
@@ -1128,7 +1139,7 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
           keyId: reservation.key.id,
           model,
           requestId: reservation.requestId,
-          totalTokens: usage?.totalTokenCount,
+          inputTokens: usage?.promptTokenCount,
           upstreamHeaders: captureRateLimitHeaders(response),
         });
         lastError = null;
@@ -1197,7 +1208,7 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
         excludedKeyIds.add(reservation.key.id);
         if (
           shouldRetryWithAnotherKey(providerError) &&
-          hasAnotherConfiguredKeyForModel(config, model, excludedKeyIds, attemptOptions?.geminiApiKeyIds, attemptOptions?.geminiApiOwnerUserId)
+          hasAnotherConfiguredKeyForModel(config, ledger, model, excludedKeyIds, attemptOptions?.geminiApiKeyIds, attemptOptions?.geminiApiOwnerUserId)
         ) {
           continue;
         }
@@ -1442,7 +1453,7 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
             keyId: reservation.key.id,
             model,
             requestId: reservation.requestId,
-            totalTokens: usage?.totalTokenCount,
+            inputTokens: usage?.promptTokenCount,
             upstreamHeaders: captureRateLimitHeaders(response),
           });
           lastError = null;
@@ -1495,7 +1506,7 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
           excludedKeyIds.add(reservation.key.id);
           if (
             shouldRetryWithAnotherKey(providerError) &&
-            hasAnotherConfiguredKeyForModel(config, model, excludedKeyIds, attemptOptions?.geminiApiKeyIds, attemptOptions?.geminiApiOwnerUserId)
+            hasAnotherConfiguredKeyForModel(config, ledger, model, excludedKeyIds, attemptOptions?.geminiApiKeyIds, attemptOptions?.geminiApiOwnerUserId)
           ) {
             continue;
           }
@@ -1575,7 +1586,7 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
     reservation: GeminiApiKeyReservation,
   ): GeminiApiProviderError {
     if (error instanceof GeminiApiProviderError) return error;
-    const isTimeout = error instanceof Error && /aborted|timeout/i.test(error.message);
+    const isTimeout = error instanceof Error && /aborted|timeout|deadline/i.test(error.message);
     const code = isTimeout ? 'gemini_api_timeout' : 'gemini_api_upstream_error';
     const message = isTimeout
       ? 'Gemini API request timed out before the upstream response completed.'
@@ -1613,7 +1624,7 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
 
   return {
     provider: 'gemini-api',
-    model: 'gemini-3.7-flash',
+    model: 'gemini-3.8-flash',
 
     async chat(messages, opts): Promise<LLMResponse> {
       return generate(messages, opts);
@@ -1629,28 +1640,44 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
       const quota = ledger.snapshot();
       const discoverySnapshot = discovery.snapshot();
       const quotaGroups = configuredQuotaGroups(config, quota.quotaGroups as unknown as Array<Record<string, unknown>>);
+      const keyStateById = new Map(quota.apiKeys.map((entry) => [entry.keyId, entry]));
+      const isAuthQuarantined = (keyId: string): boolean => {
+        const state = keyStateById.get(keyId);
+        if (state?.lastFailureCode !== 'gemini_api_auth_failed' || !state.lastFailureAt) return false;
+        const failureAt = Date.parse(state.lastFailureAt);
+        const successAt = state.lastSuccessAt ? Date.parse(state.lastSuccessAt) : 0;
+        return Number.isFinite(failureAt) && failureAt >= (Number.isFinite(successAt) ? successAt : 0);
+      };
+      const usableKeys = config.keys.filter((key) => key.enabled && !isAuthQuarantined(key.id));
       return {
         provider: 'gemini-api',
         enabled: config.enabled,
-        available: config.enabled && config.keys.some((key) => key.enabled),
+        available: config.enabled && usableKeys.length > 0,
         configuredKeyCount: config.keys.length,
-        usableKeyCount: config.keys.filter((key) => key.enabled).length,
+        usableKeyCount: usableKeys.length,
         defaultTier: config.defaultTier,
         baseUrl: config.baseUrl,
         version: config.version,
         fallbackModelIds: config.fallbackModelIds,
-        keys: config.keys.map((key) => ({
-          id: key.id,
-          preview: sanitizeKeyPreview(key.key),
-          owner: key.owner ?? null,
-          projectId: key.projectId ?? null,
-          quotaGroup: key.quotaGroup,
-          priority: key.priority,
-          enabled: key.enabled,
-          models: key.models ?? [],
-          lastUsedAt: quota.apiKeys.find((entry) => entry.keyId === key.id)?.lastUsedAt ?? null,
-          lastSuccessAt: quota.apiKeys.find((entry) => entry.keyId === key.id)?.lastSuccessAt ?? null,
-        })),
+        keys: config.keys.map((key) => {
+          const state = keyStateById.get(key.id);
+          return {
+            id: key.id,
+            preview: sanitizeKeyPreview(key.key),
+            owner: key.owner ?? null,
+            projectId: key.projectId ?? null,
+            quotaGroup: key.quotaGroup,
+            priority: key.priority,
+            enabled: key.enabled,
+            authQuarantined: isAuthQuarantined(key.id),
+            models: key.models ?? [],
+            lastUsedAt: state?.lastUsedAt ?? null,
+            lastSuccessAt: state?.lastSuccessAt ?? null,
+            lastFailureAt: state?.lastFailureAt ?? null,
+            lastFailureCode: state?.lastFailureCode ?? null,
+            lastFailureStatus: state?.lastFailureStatus ?? null,
+          };
+        }),
         quotaGroups,
         quotaUpdatedAt: quota.updatedAt,
         modelDiscovery: {
@@ -1725,6 +1752,9 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
     // process restart. The ledger is keyed by quotaGroup+keyId so usage history survives.
     reloadAccounts(keys: GeminiApiKeyConfig[]): Record<string, unknown> {
       config.keys = keys;
+      // An explicit account reload/edit is the operator's recovery path for a key that
+      // was quarantined after a Google 403 (for example after replacing credentials).
+      ledger.clearAuthFailures(keys.map((key) => key.id));
       keyPool = new GeminiApiKeyPool(config, ledger, accountCatalog);
       void accountCatalog.refresh();
       return { ok: true, configuredKeyCount: keys.length, usableKeyCount: keys.filter((key) => key.enabled).length };

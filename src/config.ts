@@ -256,6 +256,11 @@ function readGeminiApiLimits(
   };
 }
 
+function projectQuotaGroup(projectId: unknown): string | undefined {
+  const normalized = typeof projectId === 'string' ? projectId.trim() : '';
+  return normalized ? `project:${normalized}` : undefined;
+}
+
 function readGeminiApiGroupLimits(
   env: Record<string, string | undefined>,
   accounts: Array<Partial<Omit<GeminiApiKeyConfig, 'key'>> & { keyEnv?: string; limits?: Record<string, GeminiApiRateLimit> }>,
@@ -263,7 +268,9 @@ function readGeminiApiGroupLimits(
   const result: Record<string, Record<string, GeminiApiRateLimit>> = {};
   // Per-group overrides from accounts file (quotaGroup → model → rateLimit)
   for (const account of accounts) {
-    const group = account.quotaGroup ?? account.id;
+    // Gemini quotas are project-scoped. When a project ID is known, keys from the same
+    // project must share one ledger group even if the persisted account predates this rule.
+    const group = projectQuotaGroup(account.projectId) ?? account.quotaGroup ?? account.id;
     if (group && account.limits && typeof account.limits === 'object') {
       result[String(group)] = account.limits as Record<string, GeminiApiRateLimit>;
     }
@@ -310,7 +317,7 @@ function readGeminiApiKeys(
         owner: entry.owner,
         userId: entry.userId,
         projectId: entry.projectId,
-        quotaGroup: String(entry.quotaGroup ?? (defaultQuotaGroupMode === 'shared' ? 'default' : id)).trim(),
+        quotaGroup: projectQuotaGroup(entry.projectId) ?? String(entry.quotaGroup ?? (defaultQuotaGroupMode === 'shared' ? 'default' : id)).trim(),
         tier: String(entry.tier ?? defaultTier).trim(),
         priority: typeof entry.priority === 'number' ? entry.priority : 100,
         enabled: entry.enabled !== false,
@@ -333,7 +340,7 @@ function readGeminiApiKeys(
         owner: account.owner,
         userId: account.userId,
         projectId: account.projectId,
-        quotaGroup: String(account.quotaGroup ?? (defaultQuotaGroupMode === 'shared' ? 'default' : id)).trim(),
+        quotaGroup: projectQuotaGroup(account.projectId) ?? String(account.quotaGroup ?? (defaultQuotaGroupMode === 'shared' ? 'default' : id)).trim(),
         tier: String(account.tier ?? defaultTier).trim(),
         priority: typeof account.priority === 'number' ? account.priority : 100,
         enabled: account.enabled !== false,
@@ -352,7 +359,7 @@ function readGeminiApiKeys(
       owner: account.owner,
       userId: account.userId,
       projectId: account.projectId,
-      quotaGroup: String(account.quotaGroup ?? (defaultQuotaGroupMode === 'shared' ? 'default' : id)).trim(),
+      quotaGroup: projectQuotaGroup(account.projectId) ?? String(account.quotaGroup ?? (defaultQuotaGroupMode === 'shared' ? 'default' : id)).trim(),
       tier: String(account.tier ?? defaultTier).trim(),
       priority: typeof account.priority === 'number' ? account.priority : 100,
       enabled: account.enabled !== false,

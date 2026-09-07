@@ -10,11 +10,13 @@ if [[ -f "${ROOT_DIR}/.env" ]]; then
   set +a
 fi
 
-API_KEY="${GEMROUTER_BOOTSTRAP_API_KEY:-${BAIRBI_BOOTSTRAP_API_KEY:-${BARIBI_BOOTSTRAP_API_KEY:-}}}"
+API_KEY="${SMOKE_API_KEY:-${GEMROUTER_BOOTSTRAP_API_KEY:-${BAIRBI_BOOTSTRAP_API_KEY:-${BARIBI_BOOTSTRAP_API_KEY:-}}}}"
 ADMIN_TOKEN="${GEMROUTER_ADMIN_TOKEN:-}"
 SMOKE_BACKEND="${SMOKE_BACKEND:-auto}"
-SMOKE_MODEL="${SMOKE_MODEL:-${GEMINI_DIRECT_MODEL:-gemini-2.5-flash-lite}}"
-SMOKE_IMAGE_MODEL="${SMOKE_IMAGE_MODEL:-gemini-2.5-flash-image}"
+SMOKE_MODEL="${SMOKE_MODEL:-${GEMINI_DIRECT_MODEL:-gemini-3.5-flash-lite}}"
+# The production cascade is text-only. Image generation remains an optional compatibility
+# surface and is smoke-tested only when an explicit image model is supplied.
+SMOKE_IMAGE_MODEL="${SMOKE_IMAGE_MODEL:-}"
 SMOKE_WAIT_SECONDS="${SMOKE_WAIT_SECONDS:-60}"
 
 declare -a API_CANDIDATES=()
@@ -326,7 +328,7 @@ wait_for_api_base
 echo "[smoke] API base: ${API_BASE}"
 echo "[smoke] backend preference: ${SMOKE_BACKEND}"
 echo "[smoke] primary model: ${SMOKE_PRIMARY_MODEL}"
-echo "[smoke] image model: ${SMOKE_IMAGE_MODEL}"
+echo "[smoke] image model: ${SMOKE_IMAGE_MODEL:-disabled}"
 printf '\n'
 
 echo "[smoke] health"
@@ -365,11 +367,16 @@ request_json \
   "${API_BASE}/v1/responses" \
   "{\"model\":\"${SMOKE_PRIMARY_MODEL}\",\"input\":[{\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Reply only with PONG.\"}]}]}"
 
-request_json_preview \
-  "images-primary" \
-  "POST" \
-  "${API_BASE}/v1/images/generations" \
-  "{\"model\":\"${SMOKE_IMAGE_MODEL}\",\"prompt\":\"Create a minimal black circle centered on a white background.\",\"size\":\"1024x1024\",\"response_format\":\"url\"}"
+if [[ -n "${SMOKE_IMAGE_MODEL}" ]]; then
+  request_json_preview \
+    "images-primary" \
+    "POST" \
+    "${API_BASE}/v1/images/generations" \
+    "{\"model\":\"${SMOKE_IMAGE_MODEL}\",\"prompt\":\"Create a minimal black circle centered on a white background.\",\"size\":\"1024x1024\",\"response_format\":\"url\"}"
+else
+  echo "[smoke] images-primary skipped (SMOKE_IMAGE_MODEL not set)"
+  printf '\n'
+fi
 
 request_json \
   "deepseek-models" \
@@ -382,11 +389,16 @@ request_json \
   "${API_BASE}/chat/completions" \
   "{\"model\":\"${SMOKE_PRIMARY_MODEL}\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply only with DEEPSEEK-OK.\"}]}"
 
-request_json_preview \
-  "deepseek-images-primary" \
-  "POST" \
-  "${API_BASE}/images/generations" \
-  "{\"model\":\"${SMOKE_IMAGE_MODEL}\",\"prompt\":\"Create a minimal black circle centered on a white background.\",\"size\":\"1024x1024\",\"response_format\":\"url\"}"
+if [[ -n "${SMOKE_IMAGE_MODEL}" ]]; then
+  request_json_preview \
+    "deepseek-images-primary" \
+    "POST" \
+    "${API_BASE}/images/generations" \
+    "{\"model\":\"${SMOKE_IMAGE_MODEL}\",\"prompt\":\"Create a minimal black circle centered on a white background.\",\"size\":\"1024x1024\",\"response_format\":\"url\"}"
+else
+  echo "[smoke] deepseek-images-primary skipped (SMOKE_IMAGE_MODEL not set)"
+  printf '\n'
+fi
 
 request_json_basic \
   "ollama-version" \

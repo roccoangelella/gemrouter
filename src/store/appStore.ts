@@ -129,7 +129,25 @@ export class AppStore {
 
   ensureBootstrapApp(input: CreateAppInput): ApiAppRecord {
     const apiKeyHash = hashApiKey(input.rawKey ?? '');
-    const existing = this.state.apps.find((app) => stableCompare(app.apiKeyHash, apiKeyHash));
+    const keyMatch = this.state.apps.find((app) => stableCompare(app.apiKeyHash, apiKeyHash));
+    let existing = keyMatch;
+
+    // A rotated bootstrap credential can leave an older matching record revoked while the
+    // real client app remains active under the same name/namespace. On restart, prefer that
+    // active app instead of selecting the revoked duplicate and making the live profile look
+    // unavailable. Do not change the active app's hash here: its raw credential is intentionally
+    // not recoverable from storage and existing clients must keep working.
+    if (keyMatch?.revokedAt) {
+      const expectedNamespace = sanitizeSegment(input.sessionNamespace);
+      const expectedName = input.name.trim().toLowerCase();
+      existing = this.state.apps.find((app) =>
+        !app.revokedAt &&
+        app.name.trim().toLowerCase() === expectedName &&
+        app.sessionNamespace === expectedNamespace
+      ) ?? keyMatch;
+      if (existing === keyMatch) delete existing.revokedAt;
+    }
+
     if (existing) {
       existing.name = input.name;
       existing.allowedOrigins = uniqueStrings(input.allowedOrigins);

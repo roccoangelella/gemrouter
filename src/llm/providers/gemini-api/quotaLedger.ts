@@ -402,12 +402,19 @@ export class GeminiApiQuotaLedger {
     keyId: string;
     model: string;
     requestId: string;
-    totalTokens?: number;
+    inputTokens?: number;
     upstreamHeaders?: Record<string, string>;
   }): void {
     const ledger = this.getModelLedger(input.quotaGroup, input.model);
     const now = nowIso();
     ledger.lastSuccessAt = now;
+    // TPM is an input-token limit. Reservations start with a prompt-token estimate; once
+    // Gemini returns authoritative usage, replace that estimate so the minute ledger does
+    // not drift upward/downward over a sequence of calls.
+    if (typeof input.inputTokens === 'number' && Number.isFinite(input.inputTokens) && input.inputTokens >= 0) {
+      const reservedTpm = ledger.tpm.events.find((event) => event.requestId === input.requestId);
+      if (reservedTpm) reservedTpm.tokens = Math.floor(input.inputTokens);
+    }
     // A success clears the 429 backoff state for this model+account.
     ledger.rateLimitStrikes = 0;
     ledger.dailyDepleted = false;
@@ -450,15 +457,21 @@ export class GeminiApiQuotaLedger {
     ledger.lastFailureCode = input.code;
     ledger.lastFailureReason = input.reason;
     ledger.lastFailureStatus = input.status;
-    // Google returned 503 "overloaded/unavailable" for this model. It is not a quota
-    // problem and never executed, so apply a short cooldown to stop hammering the same
-    // model on every request and let the fallback chain move on quickly.
-    if (input.highDemand && !input.rateLimited) {
-      ledger.cooldownUntil = new Date(now + HIGH_DEMAND_COOLDOWN_MS).toISOString();
-      ledger.cooldownSource = 'high-demand';
+    // An invalid credential cannot be attributed to a usable Gemini project quota, so
+    // remove its optimistic reservation. For authenticated 4xx/5xx responses, keep the
+    // request reservation: Gemini's public docs define RPM/RPD as requests, not successes.
+    if (input.code === 'gemini_api_auth_failed') {
       for (const counter of [ledger.rpm, ledger.tpm, ledger.rpd]) {
         counter.events = counter.events.filter((event) => event.requestId !== input.requestId);
       }
+    }
+    // Google returned 503 "overloaded/unavailable" for this model. Apply a short cooldown
+    // so the fallback chain moves on, but keep the request reservation: request-based
+    // RPM/RPD can still be consumed by failed upstream attempts, so deleting it would
+    // make the usage bars optimistic and could overrun the real project quota.
+    if (input.highDemand && !input.rateLimited) {
+      ledger.cooldownUntil = new Date(now + HIGH_DEMAND_COOLDOWN_MS).toISOString();
+      ledger.cooldownSource = 'high-demand';
     }
     if (input.rateLimited) {
       ledger.last429At = nowString;
@@ -511,6 +524,20 @@ export class GeminiApiQuotaLedger {
     key.lastFailureCode = input.code;
     key.lastFailureStatus = input.status;
     this.persist();
+  }
+
+  clearAuthFailures(keyIds?: string[]): void {
+    const allowed = keyIds && keyIds.length > 0 ? new Set(keyIds) : null;
+    let changed = false;
+    for (const [keyId, key] of Object.entries(this.data.keys)) {
+      if (allowed && !allowed.has(keyId)) continue;
+      if (key.lastFailureCode !== 'gemini_api_auth_failed') continue;
+      delete key.lastFailureAt;
+      delete key.lastFailureCode;
+      delete key.lastFailureStatus;
+      changed = true;
+    }
+    if (changed) this.persist();
   }
 
   clearCooldown(quotaGroup?: string, model?: string): void {

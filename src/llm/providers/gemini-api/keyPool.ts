@@ -23,6 +23,10 @@ export interface AccountModelGate {
   allows(accountId: string, model: string): boolean;
 }
 
+export function keyMatchesOwner(key: { userId?: string | null }, ownerUserId?: string): boolean {
+  return ownerUserId ? key.userId === ownerUserId : !key.userId;
+}
+
 function allowsModel(key: GeminiApiKeyConfig, model: string, gate?: AccountModelGate): boolean {
   const curated = !key.models || key.models.length === 0 || key.models.includes(model);
   return curated && (gate?.allows(key.id, model) ?? true);
@@ -48,6 +52,13 @@ function parseTimestamp(value: string | undefined): number {
 
 function rotationTimestamp(input: { lastSuccessAt?: string; lastUsedAt?: string }): number {
   return parseTimestamp(input.lastSuccessAt) || parseTimestamp(input.lastUsedAt);
+}
+
+function hasUnresolvedAuthFailure(input: { lastFailureAt?: string; lastFailureCode?: string; lastSuccessAt?: string }): boolean {
+  if (input.lastFailureCode !== 'gemini_api_auth_failed') return false;
+  const failureAt = parseTimestamp(input.lastFailureAt);
+  if (failureAt <= 0) return false;
+  return failureAt >= parseTimestamp(input.lastSuccessAt);
 }
 
 function recentFailurePenalty(input: {
@@ -98,8 +109,9 @@ export class GeminiApiKeyPool {
       : null;
     const waits = this.config.keys
       .filter((key) => key.enabled)
+      .filter((key) => !hasUnresolvedAuthFailure(this.ledger.getKeyState(key.id)))
       .filter((key) => !allowedKeyIds || allowedKeyIds.has(key.id))
-      .filter((key) => !options?.ownerUserId || key.userId === options.ownerUserId)
+      .filter((key) => keyMatchesOwner(key, options?.ownerUserId))
       .filter((key) => allowsModel(key, model, this.accountModelGate))
       .filter((key) => !excludedKeyIds.has(key.id))
       .map((key) => ({ key, availability: this.ledger.getAvailability(key.quotaGroup, model, estimatedTokens) }))
@@ -150,7 +162,7 @@ export class GeminiApiKeyPool {
     const candidates = this.config.keys
       .filter((key) => key.enabled)
       .filter((key) => !allowedKeyIds || allowedKeyIds.has(key.id))
-      .filter((key) => !options?.ownerUserId || key.userId === options.ownerUserId)
+      .filter((key) => keyMatchesOwner(key, options?.ownerUserId))
       .filter((key) => allowsModel(key, model, this.accountModelGate))
       .filter((key) => !excludedKeyIds.has(key.id))
       .map((key) => {
@@ -164,6 +176,7 @@ export class GeminiApiKeyPool {
           order: keyOrder.get(key.id) ?? Number.MAX_SAFE_INTEGER,
         };
       })
+      .filter((candidate) => !hasUnresolvedAuthFailure(candidate.keyState))
       .filter((candidate) => candidate.availability.available)
       .sort((left, right) => {
         if (left.key.priority !== right.key.priority) {
@@ -200,8 +213,9 @@ export class GeminiApiKeyPool {
     if (candidates.length === 0) {
       const anyForModel = this.config.keys.some((key) =>
         key.enabled &&
+        !hasUnresolvedAuthFailure(this.ledger.getKeyState(key.id)) &&
         (!allowedKeyIds || allowedKeyIds.has(key.id)) &&
-        (!options?.ownerUserId || key.userId === options.ownerUserId) &&
+        keyMatchesOwner(key, options?.ownerUserId) &&
         allowsModel(key, model, this.accountModelGate),
       );
       throw new GeminiApiProviderError(

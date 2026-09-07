@@ -365,30 +365,60 @@ export class InteractionStore {
       current.totalTokens += record.usage?.total_tokens ?? 0;
       byApp.set(record.appId, current);
 
-      const modelKey = record.requestedModel || record.model || 'unknown';
-      const modelCurrent =
-        byModel.get(modelKey) ??
-        {
-          model: modelKey,
-          requests: 0,
-          succeeded: 0,
-          failed: 0,
-          latencySamples: 0,
-          latencyTotal: 0,
-          failureReasons: new Map<string, number>(),
-        };
-      modelCurrent.requests += 1;
-      if (record.status === 'succeeded') modelCurrent.succeeded += 1;
-      if (record.status === 'failed') {
-        modelCurrent.failed += 1;
+      const getModelStats = (modelId: string) => {
+        const modelKey = modelId || 'unknown';
+        const currentModel =
+          byModel.get(modelKey) ??
+          {
+            model: modelKey,
+            requests: 0,
+            succeeded: 0,
+            failed: 0,
+            latencySamples: 0,
+            latencyTotal: 0,
+            failureReasons: new Map<string, number>(),
+          };
+        byModel.set(modelKey, currentModel);
+        return currentModel;
+      };
+
+      // Reliability is per actual upstream model attempt, not per requested alias/model.
+      // A request can fail on one or more cascade models and then succeed on a later one;
+      // attributing the whole request to requestedModel made the error percentages wrong.
+      const fallbackAttempts = Array.isArray(record.fallbackAttempts) ? record.fallbackAttempts : [];
+      for (const attempt of fallbackAttempts) {
+        const reason = attempt.reason || `http_${attempt.statusCode ?? record.statusCode}`;
+        // Local quota/cooldown entries describe a skipped candidate, not an upstream API
+        // request. Excluding them keeps error rate equal to actual attempted calls.
+        if (reason.startsWith('local_')) continue;
+        const attemptedModel = String(attempt.model || '').replace(/^models\//, '') || 'unknown';
+        const attempted = getModelStats(attemptedModel);
+        attempted.requests += 1;
+        attempted.failed += 1;
+        attempted.failureReasons.set(reason, (attempted.failureReasons.get(reason) ?? 0) + 1);
+      }
+
+      if (record.status === 'succeeded') {
+        const finalModel = String(record.backendModel || record.model || record.requestedModel || 'unknown').replace(/^models\//, '');
+        const finalStats = getModelStats(finalModel);
+        finalStats.requests += 1;
+        finalStats.succeeded += 1;
+        if (typeof record.latencyMs === 'number' && Number.isFinite(record.latencyMs)) {
+          finalStats.latencySamples += 1;
+          finalStats.latencyTotal += record.latencyMs;
+        }
+      } else if (fallbackAttempts.length === 0) {
+        const failedModel = String(record.backendModel || record.model || record.requestedModel || 'unknown').replace(/^models\//, '');
+        const failedStats = getModelStats(failedModel);
+        failedStats.requests += 1;
+        failedStats.failed += 1;
         const reason = record.fallbackReason || `http_${record.statusCode}`;
-        modelCurrent.failureReasons.set(reason, (modelCurrent.failureReasons.get(reason) ?? 0) + 1);
+        failedStats.failureReasons.set(reason, (failedStats.failureReasons.get(reason) ?? 0) + 1);
+        if (typeof record.latencyMs === 'number' && Number.isFinite(record.latencyMs)) {
+          failedStats.latencySamples += 1;
+          failedStats.latencyTotal += record.latencyMs;
+        }
       }
-      if (typeof record.latencyMs === 'number' && Number.isFinite(record.latencyMs)) {
-        modelCurrent.latencySamples += 1;
-        modelCurrent.latencyTotal += record.latencyMs;
-      }
-      byModel.set(modelKey, modelCurrent);
     }
 
     totals.avgLatencyMs = latencySamples > 0 ? Math.round(latencyTotal / latencySamples) : 0;

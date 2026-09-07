@@ -27,10 +27,10 @@ client API key. Do not give a client admin access; the app key is the intended t
 
 The administrator can create a user from **Admin → Users** with a username and password. Each user
 can then sign in at `/admin`, add or remove only their own Gemini API keys, and rotate their own
-OpenAI-compatible client key. A user-owned client key is dynamically restricted to Gemini accounts
-owned by that user, so an empty personal pool fails closed rather than using an administrator or
-another user's account. The administrator can see each username and its connected-key count, and
-deleting a user revokes their client key and removes their owned Gemini keys.
+OpenAI-compatible client key. GemRouter enforces bidirectional isolation:
+- A user-owned client key is dynamically restricted to Gemini accounts owned by that user (`key.userId === ownerUserId`), failing closed rather than using an administrator or another user's account.
+- Administrator and shared general apps without a user owner are restricted to system/admin Gemini accounts (`!key.userId`), ensuring that user-added keys remain private to their owners and are never consumed by admin or other apps.
+The administrator can see each username and its connected-key count, and deleting a user revokes their client key and removes their owned Gemini keys.
 
 ## Quota tracking
 

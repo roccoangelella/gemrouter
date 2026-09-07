@@ -762,6 +762,57 @@ export function renderAppShell(input: {
         color: var(--muted);
         font-size: 12px;
       }
+      .model-usage-panel {
+        margin-top: var(--frame-gap);
+        padding: 16px;
+        background: var(--surface-muted);
+        border: 1px solid var(--line);
+      }
+      .model-usage-head {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 14px;
+      }
+      .model-usage-list {
+        display: grid;
+        gap: 13px;
+      }
+      .model-usage-row {
+        display: grid;
+        gap: 7px;
+      }
+      .model-usage-meta {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 12px;
+        font-size: 12px;
+      }
+      .model-usage-meta strong {
+        font-size: 13px;
+        overflow-wrap: anywhere;
+      }
+      .model-usage-track {
+        height: 10px;
+        overflow: hidden;
+        background: var(--bg);
+        border: 1px solid var(--line);
+      }
+      .model-usage-fill {
+        height: 100%;
+        min-width: 0;
+        transition: width 180ms ease;
+      }
+      .model-usage-fill.tone-0 { background: #6bd6b7; }
+      .model-usage-fill.tone-1 { background: #8ba8ff; }
+      .model-usage-fill.tone-2 { background: #edc46c; }
+      .model-usage-fill.tone-3 { background: #ef7d92; }
+      .model-usage-note {
+        color: var(--muted);
+        font-size: 11px;
+      }
       .chart-grid, .shell-grid {
         display: grid;
         gap: var(--frame-gap);
@@ -1687,10 +1738,17 @@ export function renderAppShell(input: {
           <div class="section-head">
             <div>
               <h3 class="section-title">My usage</h3>
-              <p class="section-copy">Usage for your own router profile, not every user on this installation.</p>
+              <p class="section-copy">Router-wide request and token usage. Quota consumption remains counted even when the app that made a historical request is later revoked.</p>
             </div>
           </div>
           <div id="stats-grid" class="stats-grid"></div>
+          <div class="model-usage-panel">
+            <div class="model-usage-head">
+              <div><strong>Daily Gemini model consumption</strong><div class="model-usage-note">RPD is tracked separately per cascade model. Gemini-reported project limits win; otherwise GemRouter uses the configured free-tier fallback.</div></div>
+              <div id="admin-model-usage-reset" class="model-usage-note"></div>
+            </div>
+            <div id="admin-model-usage" class="model-usage-list"></div>
+          </div>
         </section>
 
         <section class="panel section" data-window-scope="admin" data-window="admin-routing">
@@ -2031,7 +2089,7 @@ export function renderAppShell(input: {
           <div class="section-head">
             <div>
               <h3 class="section-title">${svgIcon('api')} Model Reliability</h3>
-              <p class="section-copy">Requests, success rate, and failure reasons per requested model — helps tell "quota momentarily unavailable" apart from a real outage.</p>
+              <p class="section-copy">Actual cascade attempts per upstream model, including failures before a later model succeeds. Success/error percentages are calculated from those attempts.</p>
             </div>
             <div class="section-head-actions">
               <button type="button" class="secondary section-toggle" data-section-toggle="model-stats-section-body" aria-controls="model-stats-section-body" aria-expanded="true">
@@ -2046,10 +2104,11 @@ export function renderAppShell(input: {
               <thead>
                 <tr>
                   <th>Model</th>
-                  <th>Requests</th>
+                  <th>Attempts</th>
                   <th>Success</th>
                   <th>Failed</th>
                   <th>Success rate</th>
+                  <th>Error rate</th>
                   <th>Avg latency</th>
                   <th>Top failure reasons</th>
                 </tr>
@@ -2145,7 +2204,14 @@ export function renderAppShell(input: {
         <section class="panel section" data-window-scope="user" data-window="user-overview">
           <div class="section-head"><div><h3 class="section-title">My usage</h3><p class="section-copy">Every call routed with one of your connected Gemini keys, from any application.</p></div></div>
           <div id="user-stats-grid" class="stats-grid"></div>
-          <div class="section-head" style="margin-top:24px"><div><h3 class="section-title">Your last 10 calls</h3><p class="section-copy">Input and output excerpts, app, model, route, usage, and latency. Only your latest 10 calls are retained.</p></div></div>
+          <div class="model-usage-panel">
+            <div class="model-usage-head">
+              <div><strong>Daily Gemini model consumption</strong><div class="model-usage-note">RPD is tracked separately per cascade model. Gemini-reported project limits win; otherwise GemRouter uses the configured free-tier fallback.</div></div>
+              <div id="user-model-usage-reset" class="model-usage-note"></div>
+            </div>
+            <div id="user-model-usage" class="model-usage-list"></div>
+          </div>
+          <div class="section-head" style="margin-top:24px"><div><h3 class="section-title">Your last 10 calls</h3><p class="section-copy">Input and output excerpts, app, model, route, usage, and latency. The latest 10 are shown here; usage totals are not intentionally truncated to ten calls.</p></div></div>
           <div class="table-wrap"><table class="table responsive-table"><thead><tr><th>When</th><th>App</th><th>Model</th><th>Input</th><th>Output</th><th>Usage</th></tr></thead><tbody id="user-interactions-table"></tbody></table></div>
         </section>
         <section class="panel section" data-window-scope="user" data-window="user-api">
@@ -2331,7 +2397,11 @@ export function renderAppShell(input: {
       const providerPills = document.getElementById('provider-pills');
       const providerOutput = document.getElementById('provider-output');
       const statsGrid = document.getElementById('stats-grid');
+      const adminModelUsage = document.getElementById('admin-model-usage');
+      const adminModelUsageReset = document.getElementById('admin-model-usage-reset');
       const userStatsGrid = document.getElementById('user-stats-grid');
+      const userModelUsage = document.getElementById('user-model-usage');
+      const userModelUsageReset = document.getElementById('user-model-usage-reset');
       const compatibilityForm = document.getElementById('compatibility-form');
       const compatibilityStatus = document.getElementById('compatibility-status');
       const compatibilityOutput = document.getElementById('compatibility-output');
@@ -2610,8 +2680,11 @@ export function renderAppShell(input: {
         const list = Array.isArray(accounts) ? accounts : [];
         accountsTable.innerHTML = list.map(function(account) {
           const id = escapeHtml(String(account.id || ''));
+          const authState = account.authQuarantined
+            ? '<div class="footer-note"><span class="chip bad">auth failed · quarantined</span></div>'
+            : '';
           return '<tr>' +
-            '<td data-label="Account"><strong>' + id + '</strong>' + (account.owner ? '<div class="footer-note">' + escapeHtml(String(account.owner)) + '</div>' : '') + '</td>' +
+            '<td data-label="Account"><strong>' + id + '</strong>' + (account.owner ? '<div class="footer-note">' + escapeHtml(String(account.owner)) + '</div>' : '') + authState + '</td>' +
             '<td data-label="Quota group">' + escapeHtml(String(account.quotaGroup || '')) + '</td>' +
             '<td data-label="Priority"><input class="input account-priority" data-account="' + id + '" type="number" value="' + escapeHtml(String(account.priority)) + '" style="width:84px" /></td>' +
             '<td data-label="Enabled"><input type="checkbox" class="account-enabled" data-account="' + id + '"' + (account.enabled ? ' checked' : '') + ' /></td>' +
@@ -3117,6 +3190,45 @@ export function renderAppShell(input: {
         renderUsers(data.users);
       }
 
+      function renderModelUsage(profile, listEl, resetEl) {
+        if (!listEl || !resetEl) return;
+        const rows = Array.isArray(profile && profile.modelUsage) ? profile.modelUsage : [];
+        const resetAt = profile && profile.modelUsageResetAt ? new Date(profile.modelUsageResetAt) : null;
+        resetEl.textContent = resetAt && Number.isFinite(resetAt.getTime())
+          ? 'Resets ' + resetAt.toLocaleString()
+          : 'RPD resets at Pacific midnight';
+        if (rows.length === 0) {
+          listEl.innerHTML = '<div class="model-usage-note">No routed Gemini models are configured.</div>';
+          return;
+        }
+        listEl.innerHTML = rows.map(function(row, index) {
+          const percentValue = Number.isFinite(Number(row.percent)) ? Math.max(0, Math.min(100, Number(row.percent))) : 0;
+          const used = Number.isFinite(Number(row.used)) ? Number(row.used) : 0;
+          const limit = Number.isFinite(Number(row.limit)) ? Number(row.limit) : 0;
+          const remaining = Number.isFinite(Number(row.remaining)) ? Number(row.remaining) : Math.max(0, limit - used);
+          const bucketCount = Number.isFinite(Number(row.quotaProjects)) ? Number(row.quotaProjects) : 0;
+          const quotaText = limit > 0
+            ? (fmtNumber(used) + ' / ' + fmtNumber(limit) + ' requests · ' + percentValue.toFixed(1) + '%')
+            : 'No quota bucket connected';
+          const detail = limit > 0
+            ? (fmtNumber(remaining) + ' remaining · ' + bucketCount + ' quota bucket' + (bucketCount === 1 ? '' : 's') + ' · ' + (row.authoritative ? 'Gemini-reported limit' : 'local configured limit'))
+            : 'Add a Gemini key (with Project ID when available) to track project-scoped RPD accurately.';
+          return '<div class="model-usage-row">' +
+            '<div class="model-usage-meta"><strong>' + escapeHtml(String(row.model || 'unknown')) + '</strong><span>' + escapeHtml(quotaText) + '</span></div>' +
+            '<div class="model-usage-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + percentValue.toFixed(1) + '"><div class="model-usage-fill tone-' + (index % 4) + '" style="width:' + percentValue.toFixed(2) + '%"></div></div>' +
+            '<div class="model-usage-note">' + escapeHtml(detail) + '</div>' +
+          '</div>';
+        }).join('');
+      }
+
+      function renderUserModelUsage(profile) {
+        renderModelUsage(profile, userModelUsage, userModelUsageReset);
+      }
+
+      function renderAdminModelUsage(summary) {
+        renderModelUsage(summary, adminModelUsage, adminModelUsageReset);
+      }
+
       function renderUserProfile(profile) {
         state.userProfile = profile;
         userBannerTitle.textContent = profile.username ? ('Your GemRouter profile: ' + profile.username) : 'Your GemRouter profile';
@@ -3124,10 +3236,13 @@ export function renderAppShell(input: {
         userApiKeyPreview.value = profile.apiKeyPreview || '';
         userModels.textContent = 'Allowed models\\n' + (profile.models || []).join('\\n');
         renderStats(profile.stats, userStatsGrid);
+        renderUserModelUsage(profile);
         renderUserInteractions(profile.stats);
         const accounts = Array.isArray(profile.accounts) ? profile.accounts : [];
         userAccountsTable.innerHTML = accounts.map(function(account) {
-          return '<tr><td><strong>' + escapeHtml(account.id) + '</strong><div class="footer-note mono">' + escapeHtml(account.keyPreview || '') + '</div></td><td>' + escapeHtml(account.projectId || '—') + '</td><td><span class="chip ' + (account.enabled === false ? 'warn' : 'good') + '">' + (account.enabled === false ? 'disabled' : 'enabled') + '</span></td><td><button type="button" class="bad" data-account-id="' + escapeHtml(account.id) + '">Remove</button></td></tr>';
+          const statusClass = account.authQuarantined ? 'bad' : (account.enabled === false ? 'warn' : 'good');
+          const statusLabel = account.authQuarantined ? 'auth failed' : (account.enabled === false ? 'disabled' : 'enabled');
+          return '<tr><td><strong>' + escapeHtml(account.id) + '</strong><div class="footer-note mono">' + escapeHtml(account.keyPreview || '') + '</div></td><td>' + escapeHtml(account.projectId || '—') + '</td><td><span class="chip ' + statusClass + '">' + statusLabel + '</span></td><td><button type="button" class="bad" data-account-id="' + escapeHtml(account.id) + '">Remove</button></td></tr>';
         }).join('') || '<tr><td colspan="4" class="muted">No Gemini API keys connected yet.</td></tr>';
       }
 
@@ -3138,11 +3253,15 @@ export function renderAppShell(input: {
           const usage = item.usage
             ? (item.usage.prompt_tokens + ' / ' + item.usage.completion_tokens + ' / ' + item.usage.total_tokens)
             : 'n/a';
-          const model = item.requestedModel || item.model || 'unknown';
+          const requestedModel = item.requestedModel || item.model || 'unknown';
+          const backendModel = item.backendModel || item.model || requestedModel;
+          const modelDetail = backendModel !== requestedModel
+            ? '<div class="footer-note">requested ' + escapeHtml(requestedModel) + '</div>'
+            : '';
           return '<tr>' +
             '<td data-label="When">' + escapeHtml(new Date(item.createdAt).toLocaleString()) + '<div class="footer-note">' + escapeHtml(item.route || '') + '</div></td>' +
             '<td data-label="App"><strong>' + escapeHtml(item.appName || 'Personal app') + '</strong></td>' +
-            '<td data-label="Model">' + escapeHtml(model) + '</td>' +
+            '<td data-label="Model">' + escapeHtml(backendModel) + modelDetail + '</td>' +
             '<td data-label="Input">' + escapeHtml(item.promptExcerpt || '(empty)') + '</td>' +
             '<td data-label="Output">' + escapeHtml(item.responseExcerpt || item.error || '(empty)') + '</td>' +
             '<td data-label="Usage">' + escapeHtml(usage) + '<div class="footer-note">' + escapeHtml(String(item.latencyMs || 0)) + ' ms</div></td>' +
@@ -3189,6 +3308,7 @@ export function renderAppShell(input: {
 
       // Strongest -> weakest. Anything not listed sorts after, alphabetically.
       const MODEL_POWER_ORDER = [
+        'gemini-3.8-flash',
         'gemini-3.7-flash',
         'gemini-3.6-flash',
         'gemini-3.5-flash',
@@ -3904,11 +4024,13 @@ export function renderAppShell(input: {
         if (!targetGrid) return;
         const totals = summary && summary.totals ? summary.totals : {};
         const feedback = summary && summary.feedback ? summary.feedback : {};
+        const windowHours = Number(summary && summary.totalsWindowHours || 0);
+        const windowSuffix = windowHours > 0 ? (' · last ' + windowHours + 'h') : '';
         targetGrid.innerHTML = [
-          ['Requests', fmtNumber(totals.requests), (totals.succeeded || 0) + ' ok / ' + (totals.failed || 0) + ' failed'],
-          ['Tokens', fmtNumber(totals.totalTokens), fmtNumber(totals.promptTokens) + ' prompt / ' + fmtNumber(totals.completionTokens) + ' completion'],
-          ['Avg latency', fmtNumber(totals.avgLatencyMs) + ' ms', 'Across logged interactions'],
-          ['Feedback', (feedback.good || 0) + ' good / ' + (feedback.bad || 0) + ' bad', (feedback.unrated || 0) + ' unrated'],
+          ['Requests', fmtNumber(totals.requests), (totals.succeeded || 0) + ' ok / ' + (totals.failed || 0) + ' failed' + windowSuffix],
+          ['Tokens', fmtNumber(totals.totalTokens), fmtNumber(totals.promptTokens) + ' prompt / ' + fmtNumber(totals.completionTokens) + ' completion' + windowSuffix],
+          ['Avg latency', fmtNumber(totals.avgLatencyMs) + ' ms', windowHours > 0 ? ('Last ' + windowHours + 'h') : 'Across logged interactions'],
+          ['Feedback', (feedback.good || 0) + ' good / ' + (feedback.bad || 0) + ' bad', (feedback.unrated || 0) + ' unrated' + (windowHours > 0 ? ' · retained sample' : '')],
         ].map(function(entry) {
           return '<div class="card"><div class="label">' + escapeHtml(entry[0]) + '</div><div class="metric">' + escapeHtml(entry[1]) + '</div><div class="metric-sub">' + escapeHtml(entry[2]) + '</div></div>';
         }).join('');
@@ -3918,12 +4040,14 @@ export function renderAppShell(input: {
         if (!modelStatsTable) return;
         const rows = (summary && Array.isArray(summary.byModel)) ? summary.byModel : [];
         if (rows.length === 0) {
-          modelStatsTable.innerHTML = '<tr><td colspan="7" class="muted">No interactions logged yet.</td></tr>';
+          modelStatsTable.innerHTML = '<tr><td colspan="8" class="muted">No interactions logged yet.</td></tr>';
           return;
         }
         modelStatsTable.innerHTML = rows.map(function(row) {
-          const rate = row.requests > 0 ? (100 * row.succeeded / row.requests) : 0;
-          const rateClass = rate >= 90 ? 'good' : (rate >= 60 ? 'warn' : 'bad');
+          const successRate = row.requests > 0 ? (100 * row.succeeded / row.requests) : 0;
+          const errorRate = row.requests > 0 ? (100 * row.failed / row.requests) : 0;
+          const successClass = successRate >= 90 ? 'good' : (successRate >= 60 ? 'warn' : 'bad');
+          const errorClass = errorRate <= 10 ? 'good' : (errorRate <= 40 ? 'warn' : 'bad');
           const reasons = (row.failureReasons || [])
             .slice(0, 3)
             .map(function(r) { return escapeHtml(r.reason) + ' (' + r.count + ')'; })
@@ -3933,7 +4057,8 @@ export function renderAppShell(input: {
             '<td>' + fmtNumber(row.requests) + '</td>' +
             '<td>' + fmtNumber(row.succeeded) + '</td>' +
             '<td>' + fmtNumber(row.failed) + '</td>' +
-            '<td><span class="chip ' + rateClass + '">' + rate.toFixed(1) + '%</span></td>' +
+            '<td><span class="chip ' + successClass + '">' + successRate.toFixed(1) + '%</span></td>' +
+            '<td><span class="chip ' + errorClass + '">' + errorRate.toFixed(1) + '%</span></td>' +
             '<td>' + fmtNumber(row.avgLatencyMs) + ' ms</td>' +
             '<td>' + reasons + '</td>' +
             '</tr>';
@@ -4030,8 +4155,9 @@ export function renderAppShell(input: {
       }
 
       function renderApps(apps) {
-        appsTable.innerHTML = apps.map(function(app) {
-          const badge = app.revokedAt ? '<span class="chip bad">revoked</span>' : '<span class="chip good">active</span>';
+        const activeApps = (Array.isArray(apps) ? apps : []).filter(function(app) { return !app.revokedAt; });
+        appsTable.innerHTML = activeApps.map(function(app) {
+          const badge = '<span class="chip good">active</span>';
           const modelSummary = app.allowedModels.length > 0
             ? (app.allowedModels.length + ' models')
             : 'bootstrap defaults';
@@ -4224,7 +4350,7 @@ export function renderAppShell(input: {
           const data = await request('/admin/summary');
           state.adminSummary = data;
           state.apps = data.apps;
-          state.adminStats = data.myStats || null;
+          state.adminStats = data.stats || null;
           state.modelCatalog = Array.isArray(data.modelCatalog) ? data.modelCatalog : [];
           state.compatibility = data.compatibility || null;
           state.freeTierPolicy = data.freeTierPolicy || null;
@@ -4239,8 +4365,9 @@ export function renderAppShell(input: {
           renderRuntimePills(data);
           renderBackendDiagnostics(data);
           renderProviderState(data);
-          renderStats(data.myStats || data.stats);
-          renderModelStats(data.myStats || data.stats);
+          renderStats(data.stats || data.myStats);
+          renderAdminModelUsage(data);
+          renderModelStats(data.stats || data.myStats);
           loadAccounts();
           loadProxyConfig();
           loadModelsConfig();

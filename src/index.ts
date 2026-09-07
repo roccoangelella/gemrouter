@@ -861,6 +861,20 @@ async function refreshFreeTierPolicyIfStale(force = false): Promise<FreeTierPoli
   return freeTierPolicyRefresh;
 }
 
+function usageForResponse(messages: LLMMessage[], outputText: string, response?: Partial<LLMResponse>): UsageSummary {
+  const estimated = estimateUsage(messages, outputText);
+  const reported = response?.usage;
+  const valid = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0;
+  const promptTokens = valid(reported?.promptTokens) ? Math.floor(reported.promptTokens) : estimated.prompt_tokens;
+  const completionTokens = valid(reported?.completionTokens) ? Math.floor(reported.completionTokens) : estimated.completion_tokens;
+  const totalTokens = valid(reported?.totalTokens) ? Math.floor(reported.totalTokens) : promptTokens + completionTokens;
+  return {
+    prompt_tokens: promptTokens,
+    completion_tokens: completionTokens,
+    total_tokens: totalTokens,
+  };
+}
+
 function recordInteraction(input: {
   request: FastifyRequest;
   route: string;
@@ -902,32 +916,7 @@ function recordInteraction(input: {
     policyFallbackReason: input.policyFallbackReason,
     fallbackAttempts: response?.fallbackAttempts,
     error: input.error,
-    perAppLimit: input.appRecord.ownerUserId ? 10 : undefined,
   });
-
-  // A personal activity feed belongs to the owner of the upstream Gemini key,
-  // not to the client application that happened to send the request.  This also
-  // covers a user's own app when a request fails before an upstream key is picked.
-  const upstreamKey = response?.apiKeyId
-    ? config.geminiApi.keys.find((key) => key.id === response.apiKeyId)
-    : undefined;
-  let activityOwnerId = upstreamKey?.userId;
-  if (!activityOwnerId && upstreamKey?.owner) {
-    const matchedUser = userStore.list().find((u) => u.username.toLowerCase() === upstreamKey.owner!.toLowerCase());
-    if (matchedUser) activityOwnerId = matchedUser.id;
-  }
-  if (!activityOwnerId) {
-    activityOwnerId = input.appRecord.ownerUserId;
-  }
-  if (activityOwnerId) {
-    const owner = userStore.findById(activityOwnerId);
-    if (owner) {
-      interactions.trimUserActivity({
-        appIds: userAppIdsForUser(owner),
-        apiKeyIds: accountIdsForUser(activityOwnerId),
-      }, 10);
-    }
-  }
 }
 
 function buildInteractionResponseFromError(error: unknown): Partial<LLMResponse> | undefined {
@@ -1778,7 +1767,7 @@ async function handleChatCompletionsRequest(
     if (!parsed.stream) {
       const response = await llm.chat(parsed.messages, sessionOptions);
       applyBackendHeaders(reply, withFallbackReason(response, resolvedModel.policyFallbackReason));
-      const usage = estimateUsage(parsed.messages, response.content);
+      const usage = usageForResponse(parsed.messages, response.content, response);
       recordInteraction({
         request,
         route: request.url,
@@ -1864,7 +1853,7 @@ async function handleChatCompletionsRequest(
         });
       }
 
-      const usage = estimateUsage(parsed.messages, finalText);
+      const usage = usageForResponse(parsed.messages, finalText, finalResponse);
       recordInteraction({
         request,
         route: request.url,
@@ -2075,7 +2064,7 @@ async function handleResponsesRequest(
     if (!parsed.stream) {
       const response = await llm.chat(parsed.messages, sessionOptions);
       applyBackendHeaders(reply, withFallbackReason(response, resolvedModel.policyFallbackReason));
-      const usage = estimateUsage(parsed.messages, response.content);
+      const usage = usageForResponse(parsed.messages, response.content, response);
       recordInteraction({
         request,
         route: request.url,
@@ -2178,7 +2167,7 @@ async function handleResponsesRequest(
         });
       }
 
-      const usage = estimateUsage(parsed.messages, finalText);
+      const usage = usageForResponse(parsed.messages, finalText, finalResponse);
       recordInteraction({
         request,
         route: request.url,
@@ -2402,7 +2391,7 @@ async function handleImageGenerationsRequest(
       model: parsed.model,
       messages,
       responseText,
-      usage: estimateUsage(messages, responseText),
+      usage: usageForResponse(messages, responseText, response),
       status: 'succeeded',
       statusCode: 200,
       provider: response.provider,
@@ -2519,7 +2508,7 @@ async function handleOllamaChatRequest(
     if (!parsed.stream) {
       const response = await llm.chat(parsed.messages, sessionOptions);
       applyBackendHeaders(reply, withFallbackReason(response, resolvedModel.policyFallbackReason));
-      const usage = estimateUsage(parsed.messages, response.content);
+      const usage = usageForResponse(parsed.messages, response.content, response);
       recordInteraction({
         request,
         route: request.url,
@@ -2581,7 +2570,7 @@ async function handleOllamaChatRequest(
         sendChunk(buildOllamaChatChunk({ model: parsed.model, text: delta }));
       }
 
-      const usage = estimateUsage(parsed.messages, finalText);
+      const usage = usageForResponse(parsed.messages, finalText, finalResponse);
       recordInteraction({
         request,
         route: request.url,
@@ -2734,7 +2723,7 @@ async function handleOllamaGenerateRequest(
     if (!parsed.stream) {
       const response = await llm.chat(parsed.messages, sessionOptions);
       applyBackendHeaders(reply, withFallbackReason(response, resolvedModel.policyFallbackReason));
-      const usage = estimateUsage(parsed.messages, response.content);
+      const usage = usageForResponse(parsed.messages, response.content, response);
       recordInteraction({
         request,
         route: request.url,
@@ -2796,7 +2785,7 @@ async function handleOllamaGenerateRequest(
         sendChunk(buildOllamaGenerateChunk({ model: parsed.model, text: delta }));
       }
 
-      const usage = estimateUsage(parsed.messages, finalText);
+      const usage = usageForResponse(parsed.messages, finalText, finalResponse);
       recordInteraction({
         request,
         route: request.url,
@@ -3192,6 +3181,15 @@ app.get('/admin/summary', async (request, reply) => {
   const backendSnapshot = (runtime.backends as Record<string, unknown> | null) ?? null;
   const providerSnapshot = (runtime.provider as Record<string, unknown> | null) ?? null;
   const geminiApiSnapshot = (backendSnapshot?.geminiApi as Record<string, unknown> | null) ?? {};
+  const retainedStats = interactions.summary(60);
+  const usage24h = interactions.hourlyWindow(24);
+  const dashboardStats = {
+    ...retainedStats,
+    totals: usage24h.totals,
+    totalsWindowHours: 24,
+    totalsWindowComplete: usage24h.complete,
+    totalsWindowStartedAt: new Date(usage24h.startedAtMs).toISOString(),
+  };
   return {
     ok: true,
     project: PROJECT_NAME,
@@ -3199,7 +3197,7 @@ app.get('/admin/summary', async (request, reply) => {
     compatibility: getCompatibilitySnapshot(request),
     runtime: {
       backendOnly: true,
-      apps: appStore.list().length,
+      apps: appStore.list().filter((appRecord) => !appRecord.revokedAt).length,
     },
     routing: routingSnapshot,
     provider: providerSnapshot,
@@ -3211,9 +3209,11 @@ app.get('/admin/summary', async (request, reply) => {
       ...freeTierPolicyState,
       configured: config.freeTierPolicy,
     },
-    apps: appStore.list().map(sanitizeAdminApp),
-    stats: interactions.summary(60),
+    apps: appStore.list().filter((appRecord) => !appRecord.revokedAt).map(sanitizeAdminApp),
+    stats: dashboardStats,
     myStats: interactions.summaryForApps([bootstrapApp.id], 60),
+    modelUsage: buildAdminModelUsage(config.freeTierPolicy.textModelIds),
+    modelUsageResetAt: new Date(nextPacificDayStartMs()).toISOString(),
   };
 });
 
@@ -3292,6 +3292,9 @@ function applyGeminiAccounts(): Record<string, unknown> {
 
 function maskAccount(key: typeof config.geminiApi.keys[number]): Record<string, unknown> {
   const raw = String(key.key ?? '');
+  const diagnostics = (geminiApiLlm.getDiagnostics?.() ?? {}) as Record<string, unknown>;
+  const diagnosticKeys = Array.isArray(diagnostics.keys) ? diagnostics.keys as Array<Record<string, unknown>> : [];
+  const keyDiagnostic = diagnosticKeys.find((entry) => String(entry.id ?? '') === key.id);
   return {
     id: key.id,
     owner: key.owner ?? null,
@@ -3301,6 +3304,10 @@ function maskAccount(key: typeof config.geminiApi.keys[number]): Record<string, 
     tier: key.tier,
     priority: key.priority,
     enabled: key.enabled,
+    authQuarantined: keyDiagnostic?.authQuarantined === true,
+    lastFailureCode: keyDiagnostic?.lastFailureCode ?? null,
+    lastFailureStatus: keyDiagnostic?.lastFailureStatus ?? null,
+    lastFailureAt: keyDiagnostic?.lastFailureAt ?? null,
     models: key.models ?? [],
     keyPreview: raw.length > 8 ? `${raw.slice(0, 4)}…${raw.slice(-4)}` : '••••',
   };
@@ -3339,7 +3346,10 @@ app.post<{
   let n = config.geminiApi.keys.length + 1;
   let id = String(request.body?.owner ?? '').trim() || `account${n}`;
   while (existingIds.has(id)) { n += 1; id = `account${n}`; }
-  const quotaGroup = String(request.body?.quotaGroup ?? '').trim() || (config.geminiApi.defaultQuotaGroupMode === 'shared' ? 'default' : id);
+  const projectId = request.body?.projectId?.trim() || undefined;
+  const quotaGroup = projectId
+    ? `project:${projectId}`
+    : (String(request.body?.quotaGroup ?? '').trim() || (config.geminiApi.defaultQuotaGroupMode === 'shared' ? 'default' : id));
   const models = Array.isArray(request.body?.models)
     ? request.body.models.map((model) => String(model).trim().toLowerCase()).filter(Boolean)
     : undefined;
@@ -3347,7 +3357,7 @@ app.post<{
     id,
     key,
     owner: request.body?.owner?.trim() || undefined,
-    projectId: request.body?.projectId?.trim() || undefined,
+    projectId,
     quotaGroup,
     tier: config.geminiApi.defaultTier,
     priority: typeof request.body?.priority === 'number' ? request.body.priority : 100,
@@ -3400,7 +3410,7 @@ function isKeyOwnedByUser(key: typeof config.geminiApi.keys[number], user: UserR
 }
 
 function userAppIdsForUser(user: UserRecord): string[] {
-  const ownedApps = appStore.list().filter((app) => app.ownerUserId === user.id).map((app) => app.id);
+  const ownedApps = appStore.list().filter((app) => !app.revokedAt && app.ownerUserId === user.id).map((app) => app.id);
   if (user.appId && !ownedApps.includes(user.appId)) {
     ownedApps.push(user.appId);
   }
@@ -3411,6 +3421,86 @@ function accountIdsForUser(userId: string): string[] {
   const user = userStore.findById(userId);
   if (!user) return [];
   return config.geminiApi.keys.filter((key) => isKeyOwnedByUser(key, user)).map((key) => key.id);
+}
+
+type ModelUsageSnapshot = Array<{
+  model: string;
+  used: number;
+  limit: number;
+  remaining: number;
+  percent: number;
+  quotaProjects: number;
+  authoritative: boolean;
+}>;
+
+function buildModelUsageForQuotaGroups(quotaGroupIds: string[], modelIds: string[]): ModelUsageSnapshot {
+  const selectedQuotaGroups = [...new Set(quotaGroupIds.filter(Boolean))];
+  const diagnostics = (geminiApiLlm.getDiagnostics?.() ?? {}) as Record<string, unknown>;
+  const quotaGroups = Array.isArray(diagnostics.quotaGroups)
+    ? diagnostics.quotaGroups as Array<Record<string, unknown>>
+    : [];
+  const groupsById = new Map(quotaGroups.map((group) => [String(group.id ?? ''), group]));
+
+  return [...new Set(modelIds.map((model) => model.trim().toLowerCase()).filter(Boolean))].map((model) => {
+    let used = 0;
+    let limit = 0;
+    let remaining = 0;
+    let authoritative = false;
+    let quotaProjects = 0;
+
+    for (const groupId of selectedQuotaGroups) {
+      const group = groupsById.get(groupId);
+      if (!group) continue;
+      const models = Array.isArray(group.models) ? group.models as Array<Record<string, unknown>> : [];
+      const row = models.find((entry) => String(entry.model ?? '').replace(/^models\//, '').toLowerCase() === model);
+      if (!row) continue;
+      quotaProjects += 1;
+      const localRpd = row.rpd && typeof row.rpd === 'object' ? row.rpd as Record<string, unknown> : {};
+      const upstreamLimit = typeof row.upstreamRpdLimit === 'number' ? row.upstreamRpdLimit : null;
+      const upstreamRemaining = typeof row.upstreamRpdRemaining === 'number' ? row.upstreamRpdRemaining : null;
+      const localLimit = typeof localRpd.limit === 'number' ? localRpd.limit : null;
+      const localUsed = typeof localRpd.used === 'number' ? localRpd.used : 0;
+      const localRemaining = typeof localRpd.remaining === 'number' ? localRpd.remaining : null;
+      const effectiveLimit = upstreamLimit ?? localLimit;
+      const effectiveRemaining = upstreamRemaining ?? localRemaining;
+      if (effectiveLimit === null) continue;
+      const effectiveUsed = effectiveRemaining !== null
+        ? Math.max(0, effectiveLimit - effectiveRemaining)
+        : Math.max(0, localUsed);
+      used += effectiveUsed;
+      limit += effectiveLimit;
+      remaining += effectiveRemaining !== null ? Math.max(0, effectiveRemaining) : Math.max(0, effectiveLimit - effectiveUsed);
+      if (upstreamLimit !== null || upstreamRemaining !== null) authoritative = true;
+    }
+
+    return {
+      model,
+      used,
+      limit,
+      remaining,
+      percent: limit > 0 ? Math.min(100, Math.max(0, (used / limit) * 100)) : 0,
+      quotaProjects,
+      authoritative,
+    };
+  });
+}
+
+function usableQuotaGroupsForKeys(keys: typeof config.geminiApi.keys): string[] {
+  const diagnostics = (geminiApiLlm.getDiagnostics?.() ?? {}) as Record<string, unknown>;
+  const diagnosticKeys = Array.isArray(diagnostics.keys) ? diagnostics.keys as Array<Record<string, unknown>> : [];
+  const byId = new Map(diagnosticKeys.map((entry) => [String(entry.id ?? ''), entry]));
+  return keys
+    .filter((key) => key.enabled && byId.get(key.id)?.authQuarantined !== true)
+    .map((key) => key.quotaGroup);
+}
+
+function buildUserModelUsage(user: UserRecord, modelIds: string[]): ModelUsageSnapshot {
+  const ownedKeys = config.geminiApi.keys.filter((key) => isKeyOwnedByUser(key, user));
+  return buildModelUsageForQuotaGroups(usableQuotaGroupsForKeys(ownedKeys), modelIds);
+}
+
+function buildAdminModelUsage(modelIds: string[]): ModelUsageSnapshot {
+  return buildModelUsageForQuotaGroups(usableQuotaGroupsForKeys(config.geminiApi.keys), modelIds);
 }
 
 function nextOwnedAccountId(username: string): string {
@@ -3437,7 +3527,6 @@ app.get('/user/summary', async (request, reply) => {
   const ownedAccountIds = accountIdsForUser(user.id);
   const userAppIds = userAppIdsForUser(user);
   const activityFilter = { appIds: userAppIds, apiKeyIds: ownedAccountIds };
-  interactions.trimUserActivity(activityFilter, 10);
   return {
     ok: true,
     username: user.username,
@@ -3446,6 +3535,8 @@ app.get('/user/summary', async (request, reply) => {
     models: clientApp.allowedModels,
     accounts: config.geminiApi.keys.filter((key) => isKeyOwnedByUser(key, user)).map(maskAccount),
     stats: interactions.summaryForUserActivity(activityFilter, 10),
+    modelUsage: buildUserModelUsage(user, clientApp.allowedModels),
+    modelUsageResetAt: new Date(nextPacificDayStartMs()).toISOString(),
   };
 });
 
@@ -3458,13 +3549,16 @@ app.post<{ Body: { key?: string; projectId?: string } }>('/user/gemini-accounts'
     return sendError(reply, 409, { message: 'This key is already configured', type: 'invalid_request_error', code: 'duplicate_key' });
   }
   const id = nextOwnedAccountId(user.username);
+  const projectId = request.body?.projectId?.trim() || undefined;
   config.geminiApi.keys.push({
     id,
     key,
     owner: user.username,
     userId: user.id,
-    projectId: request.body?.projectId?.trim() || undefined,
-    quotaGroup: config.geminiApi.defaultQuotaGroupMode === 'shared' ? `user:${user.id}` : id,
+    projectId,
+    quotaGroup: projectId
+      ? `project:${projectId}`
+      : (config.geminiApi.defaultQuotaGroupMode === 'shared' ? `user:${user.id}` : id),
     tier: config.geminiApi.defaultTier,
     priority: 100,
     enabled: true,
@@ -3852,7 +3946,7 @@ app.post<{
     });
     const response = await llm.chat(messages, options);
     applyBackendHeaders(reply, withFallbackReason(response, resolvedModel.policyFallbackReason));
-    const usage = estimateUsage(messages, response.content);
+    const usage = usageForResponse(messages, response.content, response);
     recordInteraction({
       request,
       route: request.url,
@@ -4349,7 +4443,7 @@ app.get('/admin/runtime', async (request, reply) => {
     service: SERVICE_NAME,
     backendOrder: runtime.backendOrder,
     backendOnly: true,
-    apps: appStore.list().length,
+    apps: appStore.list().filter((appRecord) => !appRecord.revokedAt).length,
     auditLogPath: config.auditLogPath,
     publicBaseUrl: inferPublicBaseUrl(request),
     compatibility: getCompatibilitySnapshot(request),
